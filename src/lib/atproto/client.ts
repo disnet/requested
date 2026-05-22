@@ -2,7 +2,7 @@ import {
 	BrowserOAuthClient,
 	buildAtprotoLoopbackClientMetadata
 } from '@atproto/oauth-client-browser';
-import { DOCUMENT_NSID, DOCUMENT_VERSION_NSID } from './lexicons';
+import { COMMENT_NSID, DOCUMENT_NSID, DOCUMENT_VERSION_NSID } from './lexicons';
 
 // Granular atproto OAuth scopes per the Permissions spec:
 //   - `atproto` is always required (base identity scope)
@@ -10,7 +10,12 @@ import { DOCUMENT_NSID, DOCUMENT_VERSION_NSID } from './lexicons';
 //     in the user's own repo. Omitting `?action=...` allows all actions.
 // We intentionally avoid the transitional `transition:generic` blanket grant —
 // users are only ever asked to authorize the collections this app actually writes.
-const SCOPES = ['atproto', `repo:${DOCUMENT_NSID}`, `repo:${DOCUMENT_VERSION_NSID}`].join(' ');
+const SCOPES = [
+	'atproto',
+	`repo:${DOCUMENT_NSID}`,
+	`repo:${DOCUMENT_VERSION_NSID}`,
+	`repo:${COMMENT_NSID}`
+].join(' ');
 
 let client: BrowserOAuthClient | undefined;
 

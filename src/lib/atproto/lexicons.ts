@@ -3,6 +3,7 @@
 
 export const DOCUMENT_NSID = 'dev.disnet.atrfc.document';
 export const DOCUMENT_VERSION_NSID = 'dev.disnet.atrfc.documentVersion';
+export const COMMENT_NSID = 'dev.disnet.atrfc.comment';
 
 export type StrongRef = {
 	uri: string;
@@ -22,4 +23,14 @@ export type DocumentVersionRecord = {
 	body: string;
 	createdAt: string;
 	previousVersion?: StrongRef;
+};
+
+export type CommentRecord = {
+	$type?: typeof COMMENT_NSID;
+	document: string;
+	version: StrongRef;
+	line?: number;
+	body: string;
+	parent?: StrongRef;
+	createdAt: string;
 };

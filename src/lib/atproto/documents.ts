@@ -186,6 +186,16 @@ async function fetchRecord<T>(
 	return res.json();
 }
 
+// Fetches an arbitrary documentVersion by AT-URI. Used by the comments UI to
+// resolve the body of an older version a comment was anchored to, so we can
+// run the shift heuristic against the current text.
+export async function getVersionByUri(uri: string): Promise<DocumentVersionRecord> {
+	const { repo, collection, rkey } = parseAtUri(uri);
+	const pds = await resolvePdsEndpoint(repo);
+	const v = await fetchRecord<DocumentVersionRecord>(pds, repo, collection, rkey);
+	return v.value;
+}
+
 // Reads a document and its current version from any user's PDS (unauthenticated).
 // Used by view + edit pages so the same code path works for the signed-in user
 // and for visitors viewing someone else's RFC.
