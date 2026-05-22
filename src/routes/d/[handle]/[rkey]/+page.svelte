@@ -3,6 +3,7 @@
 	import { auth } from '$lib/atproto/auth.svelte';
 	import {
 		getDocument,
+		listVersionChain,
 		resolveHandleToDid,
 		type LoadedDocument
 	} from '$lib/atproto/documents';
@@ -20,6 +21,8 @@
 	let author = $state<Profile | null>(null);
 	let error = $state<string | null>(null);
 
+	let versionCount = $state<number | null>(null);
+
 	let comments = $state<LoadedComment[]>([]);
 	let commentStates = $state<Map<string, CommentVersionState>>(new Map());
 	let commenterProfiles = $state<Map<string, Profile>>(new Map());
@@ -36,6 +39,7 @@
 		loaded = null;
 		author = null;
 		error = null;
+		versionCount = null;
 		comments = [];
 		commentStates = new Map();
 		commenterProfiles = new Map();
@@ -49,6 +53,10 @@
 				]);
 				loaded = doc;
 				author = profile;
+				// Fire-and-forget — version count is informational, not load-blocking.
+				void listVersionChain(did, rkey)
+					.then((chain) => (versionCount = chain.length))
+					.catch(() => (versionCount = null));
 			} catch (err) {
 				error = err instanceof Error ? err.message : String(err);
 			}
@@ -58,8 +66,6 @@
 	$effect(() => {
 		const doc = loaded;
 		if (!doc) return;
-		// Re-runs when auth resolves so a signed-in user's own freshly-posted
-		// comments get unioned in via listMyCommentsOn.
 		const agent = auth.agent;
 		const myDid = auth.did;
 		void loadComments(doc, agent, myDid);
@@ -96,7 +102,9 @@
 					body: doc.version.value.body
 				};
 				const entries = await Promise.all(
-					list.map(async (c) => [c.uri, await describeCommentVersionState(c.value, current)] as const)
+					list.map(
+						async (c) => [c.uri, await describeCommentVersionState(c.value, current)] as const
+					)
 				);
 				commentStates = new Map(entries);
 			}
@@ -105,14 +113,22 @@
 		}
 	}
 
-	// Local helper to typecheck the agent value above without re-declaring its type.
 	function getAgent() {
 		return auth.agent;
 	}
 
 	const isOwner = $derived(loaded != null && auth.did === loaded.did);
-	const renderedHtml = $derived(loaded?.version ? renderMarkdown(loaded.version.value.body) : '');
+	const renderedHtml = $derived(
+		loaded?.version ? renderMarkdown(loaded.version.value.body, { stripLeadingH1: true }) : ''
+	);
 	const lineCount = $derived(loaded?.version ? loaded.version.value.body.split('\n').length : 0);
+
+	// Display fields for the metadata block
+	const authorHandle = $derived(author?.handle ?? loaded?.did ?? '');
+	const authorDid = $derived(loaded?.did ?? '');
+	const createdAt = $derived(loaded?.value.createdAt ?? null);
+	const updatedAt = $derived(loaded?.version?.value.createdAt ?? null);
+	const docCoords = $derived(loaded ? `${loaded.rkey}` : '');
 
 	const groupedComments = $derived.by(() => {
 		const docLevel: LoadedComment[] = [];
@@ -184,47 +200,118 @@
 			composerPosting = false;
 		}
 	}
+
+	function formatDate(iso: string | null): string {
+		if (!iso) return '—';
+		const d = new Date(iso);
+		const y = d.getUTCFullYear();
+		const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+		const day = String(d.getUTCDate()).padStart(2, '0');
+		return `${y}-${m}-${day}`;
+	}
 </script>
 
+<svelte:head>
+	{#if loaded?.value.title}
+		<title>{loaded.value.title} — AT-RFC</title>
+	{/if}
+</svelte:head>
+
 {#if error}
-	<p class="error">{error}</p>
+	<div class="column">
+		<p class="error doc-error">
+			This document could not be loaded.
+			<br /><span class="muted">{error}</span>
+		</p>
+	</div>
 {:else if loaded === null}
-	<p class="muted">Loading…</p>
+	<div class="column">
+		<p class="muted">Loading document…</p>
+	</div>
 {:else if !loaded.version}
-	<p class="error">This document has no published version yet.</p>
+	<div class="column">
+		<p class="error">This document has no published version yet.</p>
+	</div>
 {:else}
-	<article>
-		<header class="doc-header">
-			<h1>{loaded.value.title}</h1>
-			<div class="meta">
-				<span class="author">
-					{#if author?.avatar}
-						<img class="avatar" src={author.avatar} alt="" />
-					{/if}
-					<span>{author?.handle ?? loaded.did}</span>
-				</span>
-				<span class="sep">·</span>
-				<time datetime={loaded.version.value.createdAt}>
-					{new Date(loaded.version.value.createdAt).toLocaleString()}
-				</time>
-				<span class="sep">·</span>
-				<a href={`/d/${page.params.handle}/${page.params.rkey}/history`}>History</a>
-				{#if isOwner}
-					<span class="sep">·</span>
-					<a href={`/d/${page.params.handle}/${page.params.rkey}/edit`}>Edit</a>
-				{/if}
+	<article class="document">
+		<header class="meta-block" aria-label="Document metadata">
+			<div class="meta-row">
+				<div class="meta-left">
+					<div class="meta-line">
+						<span class="meta-key">Document</span>
+						<span class="meta-val mono-tight">{docCoords}</span>
+					</div>
+					<div class="meta-line">
+						<span class="meta-key">Status</span>
+						<span class="status status-current">Current</span>
+					</div>
+					<div class="meta-line">
+						<span class="meta-key">Version</span>
+						<span class="meta-val">
+							{#if versionCount != null && versionCount > 1}
+								{versionCount} of {versionCount} (latest)
+							{:else if versionCount === 1}
+								1 of 1
+							{:else}
+								<span class="muted">—</span>
+							{/if}
+						</span>
+					</div>
+				</div>
+				<div class="meta-right">
+					<div class="meta-line meta-author">
+						<span class="meta-key">Author</span>
+						<span class="meta-val">
+							<span class="meta-author-handle">
+								{#if author?.avatar}
+									<img class="meta-avatar" src={author.avatar} alt="" />
+								{/if}
+								<a href={`/d/${page.params.handle}`} class="author-link">{authorHandle}</a>
+							</span>
+							<span class="meta-author-did mono-tight">{authorDid}</span>
+						</span>
+					</div>
+					<div class="meta-line">
+						<span class="meta-key">Created</span>
+						<span class="meta-val">
+							<time datetime={createdAt ?? ''}>{formatDate(createdAt)}</time>
+						</span>
+					</div>
+					<div class="meta-line">
+						<span class="meta-key">Updated</span>
+						<span class="meta-val">
+							<time datetime={updatedAt ?? ''}>{formatDate(updatedAt)}</time>
+						</span>
+					</div>
+				</div>
 			</div>
+
+			<h1 class="doc-title">{loaded.value.title}</h1>
+
+			<nav class="meta-actions" aria-label="Document actions">
+				<a class="action" href={`/d/${page.params.handle}/${page.params.rkey}/history`}>
+					[ history ]
+				</a>
+				<a class="action" href={`/d/${page.params.handle}/${page.params.rkey}/diff`}>[ diff ]</a>
+				{#if isOwner}
+					<a class="action" href={`/d/${page.params.handle}/${page.params.rkey}/edit`}>[ edit ]</a>
+				{/if}
+			</nav>
 		</header>
 
-		<div class="prose">{@html renderedHtml}</div>
+		<div class="prose">
+			{@html renderedHtml}
+		</div>
 	</article>
 
-	<section class="comments">
+	<section class="comments" aria-label="Comments">
 		<header class="comments-header">
-			<h2>Comments</h2>
+			<h2><span class="section-num">§</span> Comments</h2>
 			{#if auth.status === 'signed-in'}
 				{#if !composerOpen}
-					<button type="button" onclick={() => openComposer()}>Add comment</button>
+					<button type="button" class="bracket-btn" onclick={() => openComposer()}>
+						[ add comment ]
+					</button>
 				{/if}
 			{:else}
 				<span class="muted">Sign in to add comments.</span>
@@ -233,18 +320,22 @@
 
 		{#if composerOpen}
 			<form class="composer" onsubmit={submitComment}>
-				<label class="line-input">
-					Line (optional)
-					<input
-						type="text"
-						inputmode="numeric"
-						pattern="[0-9]*"
-						placeholder="leave blank for whole document"
-						bind:value={composerLine}
-					/>
-				</label>
+				<div class="composer-meta">
+					<label class="field composer-line">
+						<span class="field-label">Line</span>
+						<input
+							class="field-control"
+							type="text"
+							inputmode="numeric"
+							pattern="[0-9]*"
+							placeholder="leave blank for whole document"
+							bind:value={composerLine}
+						/>
+					</label>
+				</div>
 				<textarea
-					rows="4"
+					class="composer-body"
+					rows="5"
 					placeholder="Write a comment in markdown…"
 					bind:value={composerBody}
 				></textarea>
@@ -252,10 +343,17 @@
 					<p class="error">{composerError}</p>
 				{/if}
 				<div class="composer-actions">
-					<button type="submit" disabled={composerPosting}>
-						{composerPosting ? 'Posting…' : 'Post comment'}
+					<button type="submit" class="bracket-btn bracket-btn-primary" disabled={composerPosting}>
+						{composerPosting ? '[ posting… ]' : '[ post comment ]'}
 					</button>
-					<button type="button" onclick={closeComposer} disabled={composerPosting}>Cancel</button>
+					<button
+						type="button"
+						class="bracket-btn"
+						onclick={closeComposer}
+						disabled={composerPosting}
+					>
+						[ cancel ]
+					</button>
 				</div>
 			</form>
 		{/if}
@@ -265,11 +363,14 @@
 		{/if}
 
 		{#if comments.length === 0 && !commentsError}
-			<p class="muted">No comments yet on this document.</p>
+			<p class="muted comments-empty">No comments yet on this document.</p>
 		{:else}
 			{#if groupedComments.docLevel.length > 0}
 				<div class="comment-group">
-					<h3>On the whole document</h3>
+					<h3 class="comment-anchor">
+						<span class="anchor-tag">document</span>
+						On the whole document
+					</h3>
 					{#each groupedComments.docLevel as c (c.uri)}
 						{@render commentCard(c)}
 					{/each}
@@ -291,17 +392,22 @@
 {#snippet lineHeader(line: number, group: LoadedComment[])}
 	{@const state = commentStates.get(group[0].uri)}
 	{@const shift = state?.kind === 'line-stale' ? state.shift : null}
-	<h3>
+	<h3 class="comment-anchor">
 		{#if shift?.kind === 'shifted'}
-			Line {shift.to} <span class="shift">(was line {shift.from})</span>
+			<span class="anchor-tag">L{shift.to}</span>
+			<span>Line {shift.to} <span class="shift">was L{shift.from}</span></span>
 		{:else if shift?.kind === 'lost'}
+			<span class="anchor-tag anchor-tag-warn">L{line}</span>
 			<span class="shift">Line {line} — no longer present</span>
 		{:else}
-			Line {line}
+			<span class="anchor-tag">L{line}</span>
+			<span>Line {line}</span>
 		{/if}
 	</h3>
 	{#if shift?.kind === 'shifted' || shift?.kind === 'lost'}
-		<p class="snippet" title="Original line text"><code>{shift.text || '(empty line)'}</code></p>
+		<p class="snippet" title="Original line text">
+			<code>{shift.text || '(empty line)'}</code>
+		</p>
 	{/if}
 {/snippet}
 
@@ -312,210 +418,443 @@
 		<div class="comment-meta">
 			<span class="commenter">
 				{#if profile?.avatar}
-					<img class="avatar" src={profile.avatar} alt="" />
+					<img class="comment-avatar" src={profile.avatar} alt="" />
 				{/if}
 				<span>{profile?.handle ?? c.did}</span>
 			</span>
-			<span class="sep">·</span>
+			<span class="meta-sep">·</span>
 			<time datetime={c.value.createdAt}>
 				{new Date(c.value.createdAt).toLocaleString()}
 			</time>
 			{#if state && state.kind !== 'current'}
-				<span class="badge">made on earlier version</span>
+				<span class="status status-superseded">on earlier version</span>
 			{/if}
 		</div>
-		<div class="comment-body prose">{@html renderMarkdown(c.value.body)}</div>
+		<div class="comment-body prose prose-sm">
+			{@html renderMarkdown(c.value.body)}
+		</div>
 	</article>
 {/snippet}
 
 <style>
-	.doc-header {
-		margin-bottom: 2rem;
-		padding-bottom: 1rem;
-		border-bottom: 1px solid #e5e5e5;
+	.document {
+		max-width: var(--col-body);
+		margin-inline: auto;
 	}
-	.doc-header h1 {
-		margin: 0 0 0.5rem;
-		font-size: 2rem;
+
+	/* --- Metadata block --- */
+	.meta-block {
+		margin-bottom: var(--space-7);
+		padding-bottom: var(--space-5);
+		border-bottom: var(--border-thin) solid var(--rule);
 	}
-	.meta {
+	.meta-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--space-5);
+		font-size: var(--text-sm);
+		color: var(--ink-2);
+	}
+	.meta-left {
+		text-align: left;
+	}
+	.meta-right {
+		text-align: right;
+	}
+	.meta-line {
 		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.9rem;
-		color: #555;
+		gap: var(--space-3);
+		align-items: baseline;
+		padding: var(--space-1) 0;
+		line-height: var(--leading-snug);
 	}
-	.author {
+	.meta-right .meta-line {
+		justify-content: flex-end;
+	}
+	.meta-right .meta-line > .meta-val {
+		text-align: right;
+	}
+	.meta-key {
+		font-size: var(--text-2xs);
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-3);
+		min-width: 6ch;
+	}
+	.meta-val {
+		color: var(--ink);
+	}
+	.mono-tight {
+		letter-spacing: var(--track-tight);
+		font-size: var(--text-xs);
+		color: var(--ink-3);
+		word-break: break-all;
+	}
+	.meta-author {
+		flex-direction: column;
+		align-items: flex-end;
+		gap: var(--space-1);
+	}
+	.meta-author > .meta-key {
+		align-self: flex-end;
+	}
+	.meta-author-handle {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: var(--space-2);
 	}
-	.avatar {
+	.author-link {
+		color: var(--ink);
+		text-decoration-color: var(--rule-strong);
+	}
+	.author-link:hover {
+		color: var(--accent);
+	}
+	.meta-author-did {
+		display: block;
+	}
+	.meta-avatar {
 		width: 1.25rem;
 		height: 1.25rem;
 		border-radius: 999px;
 		object-fit: cover;
+		border: 1px solid var(--rule);
 	}
-	.sep {
-		color: #ccc;
+
+	.doc-title {
+		margin: var(--space-6) 0 var(--space-3);
+		font-size: var(--text-3xl);
+		font-weight: 700;
+		line-height: var(--leading-tight);
+		letter-spacing: var(--track-tight);
+		text-align: center;
+		color: var(--ink);
 	}
-	.meta a {
-		color: #226;
-		text-decoration: none;
+
+	.meta-actions {
+		display: flex;
+		justify-content: center;
+		gap: var(--space-4);
+		font-size: var(--text-sm);
 	}
-	.meta a:hover {
-		text-decoration: underline;
-	}
+
+	/* --- Prose --- */
 	.prose {
-		line-height: 1.65;
+		font-size: var(--text-base);
+		line-height: var(--leading-body);
+		color: var(--ink);
+		counter-reset: section;
 	}
 	.prose :global(h1),
 	.prose :global(h2),
+	.prose :global(h3),
+	.prose :global(h4) {
+		font-weight: 700;
+		line-height: var(--leading-snug);
+		margin-top: var(--space-7);
+		margin-bottom: var(--space-3);
+		color: var(--ink);
+		scroll-margin-top: var(--space-6);
+	}
+	.prose :global(h1) {
+		font-size: var(--text-2xl);
+		counter-reset: sub;
+		padding-bottom: var(--space-2);
+		border-bottom: var(--border-thin) solid var(--rule);
+	}
+	.prose :global(h1::before) {
+		content: counter(section) '. ';
+		counter-increment: section;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
+	}
+	.prose :global(h2) {
+		font-size: var(--text-xl);
+		counter-reset: subsub;
+	}
+	.prose :global(h2::before) {
+		content: counter(section) '.' counter(sub) '. ';
+		counter-increment: sub;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
+	}
 	.prose :global(h3) {
-		margin-top: 2rem;
+		font-size: var(--text-lg);
 	}
-	.prose :global(pre) {
-		background: #f6f8fa;
-		padding: 0.75rem 1rem;
-		border-radius: 6px;
-		overflow-x: auto;
-		font-size: 0.9em;
+	.prose :global(h3::before) {
+		content: counter(section) '.' counter(sub) '.' counter(subsub) '. ';
+		counter-increment: subsub;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
 	}
-	.prose :global(code) {
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	.prose :global(h4) {
+		font-size: var(--text-md);
+		color: var(--ink-2);
 	}
-	.prose :global(:not(pre) > code) {
-		background: #f6f8fa;
-		padding: 0.1rem 0.3rem;
-		border-radius: 3px;
-		font-size: 0.9em;
+	.prose :global(p),
+	.prose :global(ul),
+	.prose :global(ol),
+	.prose :global(blockquote),
+	.prose :global(pre),
+	.prose :global(table) {
+		margin: 0 0 var(--space-4);
+	}
+	.prose :global(ul),
+	.prose :global(ol) {
+		padding-left: 2.5ch;
+	}
+	.prose :global(li) {
+		margin-bottom: var(--space-1);
+	}
+	.prose :global(a) {
+		color: var(--accent);
+		text-decoration-color: var(--accent);
+		text-decoration-thickness: 1px;
+	}
+	.prose :global(a:hover) {
+		text-decoration-thickness: 2px;
 	}
 	.prose :global(blockquote) {
-		border-left: 3px solid #ddd;
-		margin: 1rem 0;
-		padding: 0.25rem 0 0.25rem 1rem;
-		color: #555;
+		border-left: 2px solid var(--rule-strong);
+		padding: var(--space-1) 0 var(--space-1) var(--space-4);
+		color: var(--ink-2);
+		font-style: italic;
+	}
+	.prose :global(pre) {
+		background: var(--surface-sunken);
+		border: var(--border-thin) solid var(--rule);
+		padding: var(--space-3) var(--space-4);
+		overflow-x: auto;
+		font-size: 0.9em;
+		line-height: 1.5;
+	}
+	.prose :global(:not(pre) > code) {
+		background: var(--surface-sunken);
+		padding: 1px 4px;
+		font-size: 0.9em;
+		border: var(--border-thin) solid var(--rule);
 	}
 	.prose :global(table) {
 		border-collapse: collapse;
-		margin: 1rem 0;
+		font-size: var(--text-sm);
+		width: 100%;
+		max-width: 100ch;
 	}
 	.prose :global(th),
 	.prose :global(td) {
-		border: 1px solid #e5e5e5;
-		padding: 0.4rem 0.75rem;
+		border-bottom: var(--border-thin) solid var(--rule);
+		padding: var(--space-2) var(--space-3);
+		text-align: left;
 	}
-	.error {
-		color: #b00;
+	.prose :global(th) {
+		font-weight: 700;
+		border-bottom: var(--border-thick) solid var(--rule-strong);
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		font-size: var(--text-xs);
+		color: var(--ink-3);
 	}
-	.muted {
-		color: #888;
+	.prose :global(hr) {
+		border: 0;
+		border-top: var(--border-thin) solid var(--rule);
+		margin: var(--space-6) 0;
+	}
+	.prose :global(strong) {
+		font-weight: 700;
 	}
 
+	.prose-sm {
+		font-size: var(--text-sm);
+		line-height: var(--leading-snug);
+	}
+	.prose-sm :global(p) {
+		margin-bottom: var(--space-2);
+	}
+
+	.doc-error {
+		text-align: center;
+		padding-top: var(--space-7);
+		font-size: var(--text-sm);
+	}
+
+	/* --- Comments section --- */
 	.comments {
-		margin-top: 3rem;
-		padding-top: 1.5rem;
-		border-top: 1px solid #e5e5e5;
+		max-width: var(--col-body);
+		margin: var(--space-9) auto 0;
+		padding-top: var(--space-5);
+		border-top: var(--border-thick) solid var(--rule-strong);
 	}
 	.comments-header {
 		display: flex;
 		align-items: baseline;
 		justify-content: space-between;
-		gap: 1rem;
-		margin-bottom: 1rem;
+		gap: var(--space-4);
+		margin-bottom: var(--space-5);
 	}
 	.comments-header h2 {
-		margin: 0;
-		font-size: 1.4rem;
+		font-size: var(--text-xl);
+		font-weight: 700;
+		letter-spacing: var(--track-tight);
 	}
+	.section-num {
+		color: var(--accent);
+		margin-right: 0.5ch;
+	}
+
 	.composer {
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
-		margin-bottom: 1.5rem;
-		padding: 1rem;
-		background: #fafafa;
-		border: 1px solid #e5e5e5;
-		border-radius: 6px;
+		gap: var(--space-3);
+		margin-bottom: var(--space-6);
+		padding: var(--space-4) var(--space-5);
+		background: var(--surface-raised);
+		border: var(--border-thin) solid var(--rule);
 	}
-	.composer textarea {
-		font: inherit;
-		padding: 0.5rem;
-		border: 1px solid #ccc;
-		border-radius: 4px;
-		resize: vertical;
-	}
-	.line-input {
+	.composer-meta {
 		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.9rem;
-		color: #555;
 	}
-	.line-input input {
-		width: 8rem;
-		padding: 0.25rem 0.4rem;
-		border: 1px solid #ccc;
-		border-radius: 4px;
-		font: inherit;
+	.composer-line {
+		max-width: 24rem;
+	}
+	.composer-body {
+		font-family: var(--font-mono);
+		font-size: var(--text-base);
+		line-height: var(--leading-body);
+		padding: var(--space-3);
+		background: var(--surface);
+		border: var(--border-thin) solid var(--rule-strong);
+		color: var(--ink);
+		resize: vertical;
+		min-height: 6rem;
+	}
+	.composer-body:focus {
+		outline: var(--border-thick) solid var(--accent);
+		outline-offset: -2px;
+		border-color: var(--accent);
 	}
 	.composer-actions {
 		display: flex;
-		gap: 0.5rem;
+		gap: var(--space-3);
 	}
+
 	.comment-group {
-		margin-top: 1.5rem;
+		margin-top: var(--space-6);
 	}
-	.comment-group h3 {
-		margin: 0 0 0.5rem;
-		font-size: 1rem;
-		color: #333;
+	.comment-group:first-child {
+		margin-top: 0;
+	}
+	.comment-anchor {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		font-size: var(--text-md);
+		font-weight: 500;
+		margin-bottom: var(--space-3);
+		color: var(--ink);
+	}
+	.anchor-tag {
+		display: inline-block;
+		font-size: var(--text-2xs);
+		font-weight: 500;
+		letter-spacing: var(--track-caps);
+		text-transform: uppercase;
+		padding: 2px var(--space-2);
+		border: var(--border-thin) solid var(--accent);
+		color: var(--accent);
+		min-width: 4ch;
+		text-align: center;
+	}
+	.anchor-tag-warn {
+		border-color: var(--warn);
+		color: var(--warn);
 	}
 	.shift {
-		color: #a55;
-		font-weight: normal;
+		color: var(--warn);
+		font-style: italic;
+		font-weight: 400;
 	}
 	.snippet {
-		margin: 0 0 0.5rem;
-		font-size: 0.85rem;
-		color: #666;
+		margin: 0 0 var(--space-3) calc(4ch + var(--space-3));
+		font-size: var(--text-sm);
+		color: var(--ink-3);
 	}
 	.snippet code {
-		background: #f6f8fa;
-		padding: 0.1rem 0.3rem;
-		border-radius: 3px;
+		background: var(--surface-sunken);
+		padding: 1px 4px;
+		border: var(--border-thin) solid var(--rule);
 	}
+
 	.comment {
-		margin-bottom: 0.75rem;
-		padding: 0.75rem 1rem;
-		border: 1px solid #e5e5e5;
-		border-radius: 6px;
-		background: #fff;
+		margin-bottom: var(--space-4);
+		padding: var(--space-4) var(--space-5);
+		border: var(--border-thin) solid var(--rule);
+		background: var(--surface);
+		margin-left: calc(4ch + var(--space-3));
 	}
 	.comment-meta {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.8rem;
-		color: #777;
-		margin-bottom: 0.25rem;
+		gap: var(--space-2);
+		font-size: var(--text-xs);
+		color: var(--ink-3);
+		margin-bottom: var(--space-2);
 	}
 	.commenter {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.4rem;
-		color: #333;
+		gap: var(--space-2);
+		color: var(--ink-2);
 	}
-	.badge {
-		display: inline-block;
-		padding: 0.1rem 0.4rem;
-		font-size: 0.75rem;
+	.comment-avatar {
+		width: 1rem;
+		height: 1rem;
 		border-radius: 999px;
-		background: #fff3cd;
-		color: #856404;
-		border: 1px solid #ffeeba;
+		object-fit: cover;
+		border: 1px solid var(--rule);
 	}
-	.comment-body {
-		font-size: 0.95rem;
+	.meta-sep {
+		color: var(--ink-4);
+	}
+	.comment-body :global(p:last-child) {
+		margin-bottom: 0;
+	}
+	.comments-empty {
+		text-align: center;
+		padding: var(--space-6) 0;
+		border: var(--border-thin) dashed var(--rule);
+	}
+
+	@media (max-width: 720px) {
+		.meta-row {
+			grid-template-columns: 1fr;
+			gap: var(--space-3);
+		}
+		.meta-right {
+			text-align: left;
+		}
+		.meta-right .meta-line {
+			justify-content: flex-start;
+		}
+		.meta-right .meta-line > .meta-val {
+			text-align: left;
+		}
+		.meta-author {
+			align-items: flex-start;
+		}
+		.meta-author > .meta-key {
+			align-self: flex-start;
+		}
+		.doc-title {
+			font-size: var(--text-2xl);
+			text-align: left;
+		}
+		.meta-actions {
+			justify-content: flex-start;
+		}
+		.comment,
+		.snippet {
+			margin-left: 0;
+		}
 	}
 </style>

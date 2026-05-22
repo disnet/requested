@@ -3,6 +3,8 @@
 	import {
 		getDocument,
 		getVersion,
+		listVersionChain,
+		parseAtUri,
 		resolveHandleToDid,
 		type LoadedDocument,
 		type LoadedVersion
@@ -14,6 +16,7 @@
 	let version = $state<LoadedVersion | null>(null);
 	let author = $state<Profile | null>(null);
 	let error = $state<string | null>(null);
+	let versionIndex = $state<{ n: number; total: number } | null>(null);
 
 	$effect(() => {
 		const { handle, rkey, vrkey } = page.params as {
@@ -25,6 +28,7 @@
 		version = null;
 		author = null;
 		error = null;
+		versionIndex = null;
 		void (async () => {
 			try {
 				const did = await resolveHandleToDid(handle);
@@ -36,6 +40,12 @@
 				loaded = doc;
 				version = v;
 				author = profile;
+				void listVersionChain(did, rkey).then((chain) => {
+					const idx = chain.findIndex((cv) => cv.rkey === vrkey);
+					if (idx >= 0) {
+						versionIndex = { n: chain.length - idx, total: chain.length };
+					}
+				});
 			} catch (err) {
 				error = err instanceof Error ? err.message : String(err);
 			}
@@ -46,151 +56,338 @@
 	const isCurrent = $derived(
 		loaded?.version != null && version != null && loaded.version.cid === version.cid
 	);
-	const renderedHtml = $derived(version ? renderMarkdown(version.value.body) : '');
+	const renderedHtml = $derived(
+		version ? renderMarkdown(version.value.body, { stripLeadingH1: true }) : ''
+	);
+
+	const authorHandle = $derived(author?.handle ?? loaded?.did ?? '');
+	const authorDid = $derived(loaded?.did ?? '');
+
+	function formatDate(iso: string): string {
+		const d = new Date(iso);
+		const y = d.getUTCFullYear();
+		const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+		const day = String(d.getUTCDate()).padStart(2, '0');
+		return `${y}-${m}-${day}`;
+	}
+
+	const currentVersionRkey = $derived(loaded?.version ? parseAtUri(loaded.version.uri).rkey : null);
 </script>
 
+<svelte:head>
+	{#if loaded?.value.title}
+		<title>{loaded.value.title} (older version) — AT-RFC</title>
+	{/if}
+</svelte:head>
+
 {#if error}
-	<p class="error">{error}</p>
+	<div class="column">
+		<p class="error">{error}</p>
+	</div>
 {:else if loaded === null || version === null}
-	<p class="muted">Loading…</p>
+	<div class="column">
+		<p class="muted">Loading…</p>
+	</div>
 {:else}
 	{#if !isCurrent}
-		<aside class="banner">
+		<aside class="stripe-banner stripe-banner-warn version-banner">
 			<span>
-				You're viewing an older version from
-				<time datetime={version.value.createdAt}>
-					{new Date(version.value.createdAt).toLocaleString()}
-				</time>.
+				Status: Superseded — viewing an older version from
+				<time datetime={version.value.createdAt}>{formatDate(version.value.createdAt)}</time>
 			</span>
-			<span class="banner-actions">
-				<a href={docPath}>Jump to current</a>
-				{#if loaded.version}
-					<a href={`${docPath}/diff?from=${version.rkey}&to=${loaded.version.uri.split('/').pop()}`}>
-						Diff vs current
+			<span class="version-banner-actions">
+				<a class="action" href={docPath}>[ jump to current ]</a>
+				{#if currentVersionRkey}
+					<a class="action" href={`${docPath}/diff?from=${version.rkey}&to=${currentVersionRkey}`}>
+						[ diff vs current ]
 					</a>
 				{/if}
-				<a href={`${docPath}/history`}>All versions</a>
+				<a class="action" href={`${docPath}/history`}>[ all versions ]</a>
 			</span>
 		</aside>
 	{/if}
 
-	<article>
-		<header class="doc-header">
-			<h1>{loaded.value.title}</h1>
-			<div class="meta">
-				<span class="author">
-					{#if author?.avatar}
-						<img class="avatar" src={author.avatar} alt="" />
-					{/if}
-					<span>{author?.handle ?? loaded.did}</span>
-				</span>
-				<span class="sep">·</span>
-				<time datetime={version.value.createdAt}>
-					{new Date(version.value.createdAt).toLocaleString()}
-				</time>
-				<span class="sep">·</span>
-				<a href={`${docPath}/history`}>History</a>
+	<article class="document">
+		<header class="meta-block">
+			<div class="meta-row">
+				<div class="meta-left">
+					<div class="meta-line">
+						<span class="meta-key">Document</span>
+						<span class="meta-val mono-tight">{loaded.rkey}</span>
+					</div>
+					<div class="meta-line">
+						<span class="meta-key">Status</span>
+						{#if isCurrent}
+							<span class="status status-current">Current</span>
+						{:else}
+							<span class="status status-superseded">Superseded</span>
+						{/if}
+					</div>
+					<div class="meta-line">
+						<span class="meta-key">Version</span>
+						<span class="meta-val">
+							{#if versionIndex}
+								v{versionIndex.n} of {versionIndex.total}
+							{:else}
+								<span class="mono-tight">{version.rkey}</span>
+							{/if}
+						</span>
+					</div>
+				</div>
+				<div class="meta-right">
+					<div class="meta-line meta-author">
+						<span class="meta-key">Author</span>
+						<span class="meta-val">
+							<span class="meta-author-handle">
+								{#if author?.avatar}
+									<img class="meta-avatar" src={author.avatar} alt="" />
+								{/if}
+								<span>{authorHandle}</span>
+							</span>
+							<span class="meta-author-did mono-tight">{authorDid}</span>
+						</span>
+					</div>
+					<div class="meta-line">
+						<span class="meta-key">Published</span>
+						<span class="meta-val">
+							<time datetime={version.value.createdAt}>
+								{formatDate(version.value.createdAt)}
+							</time>
+						</span>
+					</div>
+				</div>
 			</div>
+
+			<h1 class="doc-title">{loaded.value.title}</h1>
+
+			<nav class="meta-actions">
+				<a class="action" href={`${docPath}/history`}>[ history ]</a>
+				<a class="action" href={`${docPath}/diff`}>[ diff ]</a>
+			</nav>
 		</header>
 
-		<div class="prose">{@html renderedHtml}</div>
+		<div class="prose">
+			{@html renderedHtml}
+		</div>
 	</article>
 {/if}
 
 <style>
-	.banner {
+	.version-banner {
+		max-width: var(--col-wide);
+		margin: 0 auto var(--space-6);
 		display: flex;
 		justify-content: space-between;
-		align-items: center;
-		gap: 1rem;
 		flex-wrap: wrap;
-		padding: 0.6rem 1rem;
-		margin-bottom: 1.5rem;
-		background: #fff3cd;
-		border: 1px solid #ffeeba;
-		color: #856404;
-		border-radius: 6px;
-		font-size: 0.9rem;
+		gap: var(--space-3);
 	}
-	.banner-actions {
+	.version-banner-actions {
 		display: flex;
-		gap: 1rem;
+		gap: var(--space-3);
+		text-transform: none;
+		letter-spacing: 0;
 	}
-	.banner-actions a {
-		color: #856404;
-		text-decoration: underline;
+
+	.document {
+		max-width: var(--col-body);
+		margin-inline: auto;
 	}
-	.doc-header {
-		margin-bottom: 2rem;
-		padding-bottom: 1rem;
-		border-bottom: 1px solid #e5e5e5;
+
+	.meta-block {
+		margin-bottom: var(--space-7);
+		padding-bottom: var(--space-5);
+		border-bottom: var(--border-thin) solid var(--rule);
 	}
-	.doc-header h1 {
-		margin: 0 0 0.5rem;
-		font-size: 2rem;
+	.meta-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: var(--space-5);
+		font-size: var(--text-sm);
+		color: var(--ink-2);
 	}
-	.meta {
+	.meta-left {
+		text-align: left;
+	}
+	.meta-right {
+		text-align: right;
+	}
+	.meta-line {
 		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.9rem;
-		color: #555;
+		gap: var(--space-3);
+		align-items: baseline;
+		padding: var(--space-1) 0;
+		line-height: var(--leading-snug);
 	}
-	.author {
+	.meta-right .meta-line {
+		justify-content: flex-end;
+	}
+	.meta-right .meta-line > .meta-val {
+		text-align: right;
+	}
+	.meta-key {
+		font-size: var(--text-2xs);
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-3);
+		min-width: 7ch;
+	}
+	.meta-val {
+		color: var(--ink);
+	}
+	.mono-tight {
+		letter-spacing: var(--track-tight);
+		font-size: var(--text-xs);
+		color: var(--ink-3);
+		word-break: break-all;
+	}
+	.meta-author {
+		flex-direction: column;
+		align-items: flex-end;
+		gap: var(--space-1);
+	}
+	.meta-author > .meta-key {
+		align-self: flex-end;
+	}
+	.meta-author-handle {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: var(--space-2);
 	}
-	.avatar {
+	.meta-author-did {
+		display: block;
+	}
+	.meta-avatar {
 		width: 1.25rem;
 		height: 1.25rem;
 		border-radius: 999px;
 		object-fit: cover;
+		border: 1px solid var(--rule);
 	}
-	.sep {
-		color: #ccc;
+
+	.doc-title {
+		margin: var(--space-6) 0 var(--space-3);
+		font-size: var(--text-3xl);
+		font-weight: 700;
+		line-height: var(--leading-tight);
+		letter-spacing: var(--track-tight);
+		text-align: center;
+		color: var(--ink);
 	}
-	.meta a {
-		color: #226;
-		text-decoration: none;
+
+	.meta-actions {
+		display: flex;
+		justify-content: center;
+		gap: var(--space-4);
+		font-size: var(--text-sm);
 	}
-	.meta a:hover {
-		text-decoration: underline;
-	}
+
 	.prose {
-		line-height: 1.65;
+		font-size: var(--text-base);
+		line-height: var(--leading-body);
+		color: var(--ink);
+		counter-reset: section;
 	}
 	.prose :global(h1),
 	.prose :global(h2),
+	.prose :global(h3),
+	.prose :global(h4) {
+		font-weight: 700;
+		line-height: var(--leading-snug);
+		margin-top: var(--space-7);
+		margin-bottom: var(--space-3);
+		color: var(--ink);
+	}
+	.prose :global(h1) {
+		font-size: var(--text-2xl);
+		counter-reset: sub;
+		padding-bottom: var(--space-2);
+		border-bottom: var(--border-thin) solid var(--rule);
+	}
+	.prose :global(h1::before) {
+		content: counter(section) '. ';
+		counter-increment: section;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
+	}
+	.prose :global(h2) {
+		font-size: var(--text-xl);
+		counter-reset: subsub;
+	}
+	.prose :global(h2::before) {
+		content: counter(section) '.' counter(sub) '. ';
+		counter-increment: sub;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
+	}
 	.prose :global(h3) {
-		margin-top: 2rem;
+		font-size: var(--text-lg);
+	}
+	.prose :global(h3::before) {
+		content: counter(section) '.' counter(sub) '.' counter(subsub) '. ';
+		counter-increment: subsub;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
+	}
+	.prose :global(p),
+	.prose :global(ul),
+	.prose :global(ol),
+	.prose :global(blockquote),
+	.prose :global(pre),
+	.prose :global(table) {
+		margin: 0 0 var(--space-4);
+	}
+	.prose :global(ul),
+	.prose :global(ol) {
+		padding-left: 2.5ch;
+	}
+	.prose :global(a) {
+		color: var(--accent);
+		text-decoration-color: var(--accent);
+	}
+	.prose :global(blockquote) {
+		border-left: 2px solid var(--rule-strong);
+		padding: var(--space-1) 0 var(--space-1) var(--space-4);
+		color: var(--ink-2);
+		font-style: italic;
 	}
 	.prose :global(pre) {
-		background: #f6f8fa;
-		padding: 0.75rem 1rem;
-		border-radius: 6px;
+		background: var(--surface-sunken);
+		border: var(--border-thin) solid var(--rule);
+		padding: var(--space-3) var(--space-4);
 		overflow-x: auto;
 		font-size: 0.9em;
 	}
-	.prose :global(code) {
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-	}
 	.prose :global(:not(pre) > code) {
-		background: #f6f8fa;
-		padding: 0.1rem 0.3rem;
-		border-radius: 3px;
-		font-size: 0.9em;
+		background: var(--surface-sunken);
+		padding: 1px 4px;
+		border: var(--border-thin) solid var(--rule);
 	}
-	.prose :global(blockquote) {
-		border-left: 3px solid #ddd;
-		margin: 1rem 0;
-		padding: 0.25rem 0 0.25rem 1rem;
-		color: #555;
-	}
-	.error {
-		color: #b00;
-	}
-	.muted {
-		color: #888;
+
+	@media (max-width: 720px) {
+		.meta-row {
+			grid-template-columns: 1fr;
+		}
+		.meta-right {
+			text-align: left;
+		}
+		.meta-right .meta-line {
+			justify-content: flex-start;
+		}
+		.meta-right .meta-line > .meta-val {
+			text-align: left;
+		}
+		.meta-author {
+			align-items: flex-start;
+		}
+		.meta-author > .meta-key {
+			align-self: flex-start;
+		}
+		.doc-title {
+			font-size: var(--text-2xl);
+			text-align: left;
+		}
+		.meta-actions {
+			justify-content: flex-start;
+		}
 	}
 </style>

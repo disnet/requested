@@ -225,12 +225,7 @@ export async function listVersionChain(did: string, rkey: string): Promise<Loade
 	while (nextUri) {
 		const vrkey: string = parseAtUri(nextUri).rkey;
 		try {
-			const v = await fetchRecord<DocumentVersionRecord>(
-				pds,
-				did,
-				DOCUMENT_VERSION_NSID,
-				vrkey
-			);
+			const v = await fetchRecord<DocumentVersionRecord>(pds, did, DOCUMENT_VERSION_NSID, vrkey);
 			versions.push({ uri: v.uri, cid: v.cid, rkey: vrkey, value: v.value });
 			nextUri = v.value.previousVersion?.uri;
 		} catch {

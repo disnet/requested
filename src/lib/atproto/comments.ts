@@ -176,7 +176,10 @@ export async function describeCommentVersionState(
 
 	try {
 		const old = await getVersionByUri(comment.version.uri);
-		return { kind: 'line-stale', shift: resolveLineShift(old.body, currentVersion.body, comment.line) };
+		return {
+			kind: 'line-stale',
+			shift: resolveLineShift(old.body, currentVersion.body, comment.line)
+		};
 	} catch {
 		// Old version unreachable (deleted, PDS down) — fall back to "lost".
 		return {
@@ -185,4 +188,3 @@ export async function describeCommentVersionState(
 		};
 	}
 }
-

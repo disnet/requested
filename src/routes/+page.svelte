@@ -19,7 +19,6 @@
 		}
 	}
 
-	// When signed in, load this user's documents.
 	$effect(() => {
 		const agent = auth.agent;
 		const did = auth.did;
@@ -31,6 +30,8 @@
 		void (async () => {
 			try {
 				docs = await listMyDocuments(agent, did);
+				// Stable order: newest first by createdAt.
+				docs.sort((a, b) => b.value.createdAt.localeCompare(a.value.createdAt));
 				docsError = null;
 			} catch (err) {
 				docsError = err instanceof Error ? err.message : String(err);
@@ -39,174 +40,293 @@
 		})();
 	});
 
-	// `handle` for URL is the profile handle when known, else the DID.
 	const authorSlug = $derived(auth.profile?.handle ?? auth.did ?? '');
+
+	function rfcNumber(index: number, total: number): string {
+		// Reverse the index so the oldest doc is RFC-0001. `docs` is sorted
+		// newest-first, so the visual index is (total - 1 - i) but for users it
+		// reads more naturally to count from the bottom — older docs have lower
+		// numbers, like real RFCs.
+		const n = total - index;
+		return `RFC-${String(n).padStart(4, '0')}`;
+	}
+
+	function formatDate(iso: string): string {
+		const d = new Date(iso);
+		const y = d.getUTCFullYear();
+		const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+		const day = String(d.getUTCDate()).padStart(2, '0');
+		return `${y}-${m}-${day}`;
+	}
 </script>
 
 {#if auth.status === 'loading'}
-	<p class="muted">Loading…</p>
+	<div class="column">
+		<p class="muted">Loading…</p>
+	</div>
 {:else if auth.status === 'signed-out'}
-	<section class="hero">
-		<h1>AT-RFC</h1>
-		<p>Publish markdown RFCs to your atproto PDS and collect threaded line-comments.</p>
-		<form onsubmit={onSubmit}>
-			<label>
-				<span>Handle</span>
+	<section class="column signin">
+		<div class="signin-meta">
+			<div class="meta-row">
+				<span class="meta-key">Status</span>
+				<span class="meta-val">Internet-Draft</span>
+			</div>
+			<div class="meta-row">
+				<span class="meta-key">Category</span>
+				<span class="meta-val">Experimental</span>
+			</div>
+			<div class="meta-row">
+				<span class="meta-key">Protocol</span>
+				<span class="meta-val">atproto</span>
+			</div>
+		</div>
+
+		<h1 class="signin-title">AT-RFC</h1>
+		<p class="signin-lead">
+			Publish markdown documents-of-record to your atproto PDS. Collect line-anchored, threaded
+			comments from anyone with an atproto identity. The artifact lives on your server, not ours.
+		</p>
+
+		<form class="signin-form" onsubmit={onSubmit}>
+			<label class="field">
+				<span class="field-label">Handle</span>
 				<input
+					class="field-control"
 					type="text"
 					placeholder="alice.bsky.social"
 					bind:value={handle}
 					autocomplete="username"
 					required
+					disabled={submitting}
 				/>
 			</label>
-			<button type="submit" disabled={submitting}>
-				{submitting ? 'Redirecting…' : 'Sign in with atproto'}
+			<button type="submit" class="bracket-btn bracket-btn-primary" disabled={submitting}>
+				{submitting ? '[ redirecting… ]' : '[ sign in with atproto ]'}
 			</button>
 		</form>
 		{#if auth.error}
-			<p class="error">{auth.error}</p>
+			<p class="error signin-error">{auth.error}</p>
 		{/if}
+
+		<footer class="signin-foot">
+			<p class="muted">
+				AT-RFC uses atproto OAuth. You'll be redirected to your PDS to grant scoped access. AT-RFC
+				never sees your password.
+			</p>
+		</footer>
 	</section>
 {:else}
-	<section class="docs">
+	<section class="column docs">
 		<header class="docs-header">
-			<h1>Your documents</h1>
-			<a class="cta" href="/new">+ New document</a>
+			<div>
+				<h1 class="docs-title">Documents</h1>
+				<p class="docs-sub muted">
+					Documents published to <code>{auth.profile?.handle ?? auth.did}</code>
+				</p>
+			</div>
+			<a class="bracket-btn bracket-btn-primary" href="/new">[ new&nbsp;document ]</a>
 		</header>
+
 		{#if docs === null}
 			<p class="muted">Loading documents…</p>
 		{:else if docsError}
 			<p class="error">{docsError}</p>
 		{:else if docs.length === 0}
-			<p class="muted">
-				No documents yet. <a href="/new">Write your first RFC</a> to publish it to your PDS.
-			</p>
+			<div class="docs-empty">
+				<p class="muted">No documents yet on this PDS.</p>
+				<a href="/new" class="action">→ Write your first RFC.</a>
+			</div>
 		{:else}
-			<ul class="doc-list">
-				{#each docs as doc (doc.uri)}
-					<li>
-						<a href={`/d/${authorSlug}/${doc.rkey}`}>
-							<span class="title">{doc.value.title}</span>
-							<time datetime={doc.value.createdAt}>
-								{new Date(doc.value.createdAt).toLocaleDateString()}
+			<ol class="ledger" aria-label="Your documents">
+				{#each docs as doc, i (doc.uri)}
+					<li class="ledger-row">
+						<a class="ledger-link" href={`/d/${authorSlug}/${doc.rkey}`}>
+							<span class="ledger-num">{rfcNumber(i, docs.length)}</span>
+							<span class="ledger-title">{doc.value.title}</span>
+							<span class="ledger-dots" aria-hidden="true"></span>
+							<time class="ledger-date" datetime={doc.value.createdAt}>
+								{formatDate(doc.value.createdAt)}
 							</time>
 						</a>
 					</li>
 				{/each}
-			</ul>
+			</ol>
 		{/if}
 	</section>
 {/if}
 
 <style>
-	.hero {
+	/* ---------- Sign-in ---------- */
+	.signin {
+		padding-top: var(--space-7);
+	}
+	.signin-meta {
+		font-size: var(--text-sm);
+		color: var(--ink-2);
+		margin-bottom: var(--space-6);
+		padding-bottom: var(--space-5);
+		border-bottom: var(--border-thin) solid var(--rule);
+	}
+	.signin-meta .meta-row {
+		display: flex;
+		gap: var(--space-3);
+		padding: var(--space-1) 0;
+	}
+	.meta-key {
+		font-size: var(--text-2xs);
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-3);
+		min-width: 8ch;
+	}
+	.meta-val {
+		color: var(--ink);
+	}
+	.signin-title {
+		font-size: var(--text-3xl);
+		font-weight: 700;
+		letter-spacing: var(--track-tight);
+		margin: 0 0 var(--space-3);
 		text-align: center;
-		padding: 3rem 1rem 1rem;
 	}
-	.hero h1 {
-		font-size: 2.5rem;
-		margin: 0 0 0.5rem;
+	.signin-lead {
+		max-width: 60ch;
+		margin: 0 auto var(--space-7);
+		text-align: center;
+		color: var(--ink-2);
+		line-height: var(--leading-body);
 	}
-	.hero p {
-		color: #555;
-		max-width: 36rem;
-		margin: 0 auto 2rem;
-	}
-	form {
+	.signin-form {
 		display: flex;
 		flex-direction: column;
-		gap: 0.75rem;
-		max-width: 22rem;
+		gap: var(--space-5);
+		max-width: 28rem;
 		margin: 0 auto;
-		text-align: left;
 	}
-	label {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
+	.signin-form .bracket-btn {
+		align-self: stretch;
 	}
-	label span {
-		font-size: 0.8rem;
-		color: #555;
-	}
-	input {
-		padding: 0.5rem 0.75rem;
-		font: inherit;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-	}
-	button {
-		padding: 0.5rem 0.75rem;
-		font: inherit;
-		border: 1px solid #222;
-		background: #222;
-		color: white;
-		border-radius: 6px;
-		cursor: pointer;
-	}
-	button:disabled {
-		opacity: 0.6;
-		cursor: progress;
-	}
-	.error {
-		color: #b00;
-		margin-top: 1rem;
+	.signin-error {
 		text-align: center;
+		margin-top: var(--space-4);
 	}
-	.muted {
-		color: #888;
+	.signin-foot {
+		max-width: 56ch;
+		margin: var(--space-8) auto 0;
+		padding-top: var(--space-5);
+		border-top: var(--border-thin) solid var(--rule);
+		text-align: center;
+		font-size: var(--text-sm);
 	}
+
+	/* ---------- Document ledger ---------- */
 	.docs-header {
 		display: flex;
-		align-items: baseline;
+		align-items: flex-end;
 		justify-content: space-between;
-		gap: 1rem;
-		margin-bottom: 1.5rem;
+		gap: var(--space-5);
+		margin-bottom: var(--space-6);
+		padding-bottom: var(--space-4);
+		border-bottom: var(--border-thin) solid var(--rule);
 	}
-	.docs-header h1 {
-		margin: 0;
-		font-size: 1.5rem;
+	.docs-title {
+		font-size: var(--text-2xl);
+		font-weight: 700;
+		letter-spacing: var(--track-tight);
+		margin: 0 0 var(--space-1);
 	}
-	.cta {
-		padding: 0.4rem 0.75rem;
-		background: #222;
-		color: white;
-		text-decoration: none;
-		border-radius: 6px;
-		font-size: 0.9rem;
+	.docs-sub code {
+		background: var(--surface-sunken);
+		padding: 1px 4px;
+		border: var(--border-thin) solid var(--rule);
+		color: var(--ink-2);
 	}
-	.cta:hover {
-		background: #000;
+	.docs-empty {
+		text-align: center;
+		padding: var(--space-8) 0;
+		border: var(--border-thin) dashed var(--rule);
 	}
-	.doc-list {
+	.docs-empty p {
+		margin-bottom: var(--space-4);
+	}
+
+	.ledger {
 		list-style: none;
-		padding: 0;
 		margin: 0;
-		border: 1px solid #e5e5e5;
-		border-radius: 8px;
-		overflow: hidden;
+		padding: 0;
 	}
-	.doc-list li + li {
-		border-top: 1px solid #f0f0f0;
+	.ledger-row + .ledger-row {
+		border-top: var(--border-thin) solid var(--rule);
 	}
-	.doc-list a {
-		display: flex;
-		justify-content: space-between;
+	.ledger-link {
+		display: grid;
+		grid-template-columns: auto 1fr auto auto;
 		align-items: baseline;
-		gap: 1rem;
-		padding: 0.75rem 1rem;
+		gap: var(--space-3);
+		padding: var(--space-4) var(--space-2);
 		text-decoration: none;
-		color: inherit;
+		color: var(--ink);
+		transition: background var(--dur-fast) var(--ease-out-quart);
 	}
-	.doc-list a:hover {
-		background: #fafafa;
+	.ledger-link:hover {
+		background: var(--surface-raised);
 	}
-	.doc-list .title {
+	.ledger-link:hover .ledger-num {
+		color: var(--accent);
+	}
+	.ledger-num {
+		font-size: var(--text-xs);
+		color: var(--ink-3);
+		letter-spacing: var(--track-caps);
+		min-width: 8ch;
+		transition: color var(--dur-fast) var(--ease-out-quart);
+	}
+	.ledger-title {
+		font-size: var(--text-base);
+		color: var(--ink);
 		font-weight: 500;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
-	.doc-list time {
-		font-size: 0.85rem;
-		color: #888;
+	.ledger-dots {
+		border-bottom: var(--border-thin) dotted var(--rule-strong);
+		min-width: 1ch;
+		align-self: baseline;
+		height: 0;
+		margin-bottom: 0.4em;
+	}
+	.ledger-date {
+		font-size: var(--text-sm);
+		color: var(--ink-3);
+		font-variant-numeric: tabular-nums;
+	}
+
+	@media (max-width: 640px) {
+		.docs-header {
+			flex-direction: column;
+			align-items: flex-start;
+		}
+		.ledger-link {
+			grid-template-columns: auto 1fr;
+			grid-template-areas:
+				'num date'
+				'title title';
+			row-gap: var(--space-1);
+		}
+		.ledger-num {
+			grid-area: num;
+		}
+		.ledger-date {
+			grid-area: date;
+			text-align: right;
+		}
+		.ledger-title {
+			grid-area: title;
+			white-space: normal;
+		}
+		.ledger-dots {
+			display: none;
+		}
 	}
 </style>

@@ -33,12 +33,10 @@
 					return;
 				}
 
-				// "to" defaults to the document's current version.
 				const toV = toRkey
 					? await getVersion(did, toRkey)
 					: { ...doc.version, rkey: parseAtUri(doc.version.uri).rkey };
 
-				// "from" defaults to the version chained directly before "to".
 				let fromV: LoadedVersion | null = null;
 				if (fromRkey) {
 					fromV = await getVersion(did, fromRkey);
@@ -60,20 +58,19 @@
 		})();
 	});
 
-	type DiffLine = { kind: 'add' | 'del' | 'context'; text: string };
+	type DiffLine = { kind: 'add' | 'del' | 'context'; text: string; n: number };
 
 	const chunks: DiffLine[] = $derived.by(() => {
 		if (!from || !to) return [];
 		const raw: Change[] = diffLines(from.value.body, to.value.body);
 		const out: DiffLine[] = [];
+		let n = 0;
 		for (const c of raw) {
-			// Each Change.value can contain multiple lines; split keeping trailing
-			// newlines so an empty final entry doesn't produce a phantom line.
 			const lines = c.value.split('\n');
 			if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
 			const kind: DiffLine['kind'] = c.added ? 'add' : c.removed ? 'del' : 'context';
 			for (const line of lines) {
-				out.push({ kind, text: line });
+				out.push({ kind, text: line, n: ++n });
 			}
 		}
 		return out;
@@ -90,173 +87,204 @@
 	});
 
 	const docPath = $derived(`/d/${page.params.handle}/${page.params.rkey}`);
+
+	function formatDate(iso: string): string {
+		const d = new Date(iso);
+		const y = d.getUTCFullYear();
+		const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+		const day = String(d.getUTCDate()).padStart(2, '0');
+		const hh = String(d.getUTCHours()).padStart(2, '0');
+		const mm = String(d.getUTCMinutes()).padStart(2, '0');
+		return `${y}-${m}-${day} ${hh}:${mm}`;
+	}
 </script>
 
-{#if error && !to}
-	<p class="error">{error}</p>
-{:else if loaded === null || to === null}
-	<p class="muted">Loading…</p>
-{:else}
-	<header class="page-header">
-		<p class="crumb"><a href={docPath}>← {loaded.value.title}</a></p>
-		<h1>Diff</h1>
-		<div class="meta">
-			{#if from}
-				<span>
-					<span class="del-swatch"></span>
-					<time datetime={from.value.createdAt}>
-						{new Date(from.value.createdAt).toLocaleString()}
-					</time>
-				</span>
-				<span class="arrow">→</span>
-			{/if}
-			<span>
-				<span class="add-swatch"></span>
-				<time datetime={to.value.createdAt}>
-					{new Date(to.value.createdAt).toLocaleString()}
-				</time>
-			</span>
-			{#if from}
-				<span class="sep">·</span>
-				<span class="counts">
-					<span class="add-count">+{summary.added}</span>
-					<span class="del-count">−{summary.removed}</span>
-				</span>
-			{/if}
-			<span class="sep">·</span>
-			<a href={`${docPath}/history`}>All versions</a>
-		</div>
-	</header>
-
-	{#if error}
-		<p class="muted">{error}</p>
-	{:else}
-		<div class="diff">
-			{#each chunks as line, i (i)}
-				<div class="line {line.kind}">
-					<span class="marker">
-						{line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
-					</span><span class="text">{line.text || ' '}</span>
-				</div>
-			{/each}
-		</div>
+<svelte:head>
+	{#if loaded?.value.title}
+		<title>Diff · {loaded.value.title} — AT-RFC</title>
 	{/if}
+</svelte:head>
+
+{#if error && !to}
+	<div class="column">
+		<p class="error">{error}</p>
+	</div>
+{:else if loaded === null || to === null}
+	<div class="column">
+		<p class="muted">Loading…</p>
+	</div>
+{:else}
+	<div class="column-wide">
+		<nav class="crumb">
+			<a href={docPath} class="action">[ ← {loaded.value.title} ]</a>
+		</nav>
+
+		<header class="page-header">
+			<h1>Diff</h1>
+			<div class="diff-meta">
+				{#if from}
+					<div class="diff-meta-block">
+						<span class="meta-key">From</span>
+						<span class="diff-marker diff-marker-del">−</span>
+						<time datetime={from.value.createdAt}>
+							{formatDate(from.value.createdAt)}
+						</time>
+						<span class="mono-tight muted">{from.rkey}</span>
+					</div>
+					<div class="diff-arrow" aria-hidden="true">→</div>
+				{/if}
+				<div class="diff-meta-block">
+					<span class="meta-key">To</span>
+					<span class="diff-marker diff-marker-add">+</span>
+					<time datetime={to.value.createdAt}>
+						{formatDate(to.value.createdAt)}
+					</time>
+					<span class="mono-tight muted">{to.rkey}</span>
+				</div>
+				{#if from}
+					<div class="diff-counts">
+						<span class="add-count">+{summary.added}</span>
+						<span class="del-count">−{summary.removed}</span>
+					</div>
+				{/if}
+			</div>
+			<nav class="page-actions">
+				<a class="action" href={`${docPath}/history`}>[ all versions ]</a>
+			</nav>
+		</header>
+
+		{#if error}
+			<p class="muted">{error}</p>
+		{:else}
+			<div class="diff" role="region" aria-label="Unified diff">
+				{#each chunks as line (line.n)}
+					<div class="line line-{line.kind}">
+						<span class="marker" aria-hidden="true">
+							{line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
+						</span>
+						<span class="text">{line.text || ' '}</span>
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</div>
 {/if}
 
 <style>
-	.page-header {
-		margin-bottom: 1.5rem;
-		padding-bottom: 1rem;
-		border-bottom: 1px solid #e5e5e5;
-	}
 	.crumb {
-		margin: 0 0 0.5rem;
-		font-size: 0.9rem;
+		margin-bottom: var(--space-4);
+		font-size: var(--text-sm);
 	}
-	.crumb a {
-		color: #555;
-		text-decoration: none;
-	}
-	.crumb a:hover {
-		color: #000;
+
+	.page-header {
+		margin-bottom: var(--space-5);
+		padding-bottom: var(--space-4);
+		border-bottom: var(--border-thin) solid var(--rule);
 	}
 	.page-header h1 {
-		margin: 0 0 0.5rem;
-		font-size: 1.75rem;
+		font-size: var(--text-2xl);
+		font-weight: 700;
+		letter-spacing: var(--track-tight);
+		margin: 0 0 var(--space-3);
 	}
-	.meta {
+	.diff-meta {
 		display: flex;
 		align-items: center;
-		gap: 0.6rem;
+		gap: var(--space-4);
 		flex-wrap: wrap;
-		font-size: 0.9rem;
-		color: #555;
+		font-size: var(--text-sm);
 	}
-	.meta time {
-		font-variant-numeric: tabular-nums;
-	}
-	.meta a {
-		color: #226;
-		text-decoration: none;
-	}
-	.meta a:hover {
-		text-decoration: underline;
-	}
-	.sep {
-		color: #ccc;
-	}
-	.arrow {
-		color: #999;
-	}
-	.add-swatch,
-	.del-swatch {
-		display: inline-block;
-		width: 0.7rem;
-		height: 0.7rem;
-		border-radius: 2px;
-		vertical-align: middle;
-		margin-right: 0.25rem;
-	}
-	.add-swatch {
-		background: #d4edda;
-		border: 1px solid #b6d4b6;
-	}
-	.del-swatch {
-		background: #fbd4d4;
-		border: 1px solid #e4a8a8;
-	}
-	.counts {
+	.diff-meta-block {
 		display: inline-flex;
-		gap: 0.4rem;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+	}
+	.meta-key {
+		font-size: var(--text-2xs);
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-3);
+	}
+	.diff-marker {
+		font-weight: 700;
 		font-variant-numeric: tabular-nums;
+	}
+	.diff-marker-add {
+		color: var(--addition);
+	}
+	.diff-marker-del {
+		color: var(--accent);
+	}
+	.diff-arrow {
+		color: var(--ink-3);
+	}
+	.mono-tight {
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		word-break: break-all;
+	}
+	.diff-counts {
+		display: inline-flex;
+		gap: var(--space-3);
+		font-size: var(--text-sm);
+		font-variant-numeric: tabular-nums;
+		margin-left: auto;
 	}
 	.add-count {
-		color: #2d662d;
+		color: var(--addition);
 	}
 	.del-count {
-		color: #a33;
+		color: var(--accent);
 	}
+	.page-actions {
+		margin-top: var(--space-3);
+		display: flex;
+		gap: var(--space-3);
+		font-size: var(--text-sm);
+	}
+
 	.diff {
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.85rem;
-		line-height: 1.5;
-		background: #fafafa;
-		border: 1px solid #e5e5e5;
-		border-radius: 6px;
-		padding: 0.5rem 0;
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+		line-height: 1.55;
+		background: var(--surface-raised);
+		border: var(--border-thin) solid var(--rule);
+		padding: var(--space-3) 0;
 		overflow-x: auto;
-		margin: 0;
 	}
 	.line {
 		display: flex;
-		gap: 0.5rem;
-		padding: 0 1rem;
+		gap: var(--space-2);
+		padding: 0 var(--space-4);
 	}
 	.line .marker {
 		flex: 0 0 1ch;
 		text-align: center;
-		opacity: 0.6;
 		user-select: none;
+		font-weight: 700;
+		color: var(--ink-4);
 	}
 	.line .text {
 		white-space: pre;
 		flex: 1;
+		font-variant-ligatures: none;
 	}
-	.line.add {
-		background: #e6f4ea;
-		color: #1e4620;
+	.line-add {
+		background: var(--addition-fade);
+		color: var(--ink);
 	}
-	.line.del {
-		background: #fbe9e9;
-		color: #6b1d1d;
+	.line-add .marker {
+		color: var(--addition);
 	}
-	.line.context {
-		color: #444;
+	.line-del {
+		background: var(--accent-fade);
+		color: var(--ink);
 	}
-	.error {
-		color: #b00;
+	.line-del .marker {
+		color: var(--accent);
 	}
-	.muted {
-		color: #888;
+	.line-context {
+		color: var(--ink-2);
 	}
 </style>

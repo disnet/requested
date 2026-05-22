@@ -33,150 +33,179 @@
 	});
 
 	const docPath = $derived(`/d/${page.params.handle}/${page.params.rkey}`);
+
+	function formatDate(iso: string): string {
+		const d = new Date(iso);
+		const y = d.getUTCFullYear();
+		const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+		const day = String(d.getUTCDate()).padStart(2, '0');
+		const hh = String(d.getUTCHours()).padStart(2, '0');
+		const mm = String(d.getUTCMinutes()).padStart(2, '0');
+		return `${y}-${m}-${day} ${hh}:${mm} UTC`;
+	}
 </script>
 
-{#if error}
-	<p class="error">{error}</p>
-{:else if loaded === null}
-	<p class="muted">Loading…</p>
-{:else}
-	<header class="page-header">
-		<p class="crumb"><a href={docPath}>← {loaded.value.title}</a></p>
-		<h1>Version history</h1>
-		<p class="muted">{versions.length} {versions.length === 1 ? 'version' : 'versions'}</p>
-	</header>
-
-	{#if versions.length === 0}
-		<p class="muted">No versions found.</p>
-	{:else}
-		<ol class="versions">
-			{#each versions as v, i (v.uri)}
-				{@const isCurrent = i === 0}
-				{@const prev = versions[i + 1]}
-				<li class="version" class:current={isCurrent}>
-					<div class="row">
-						<div class="when">
-							<time datetime={v.value.createdAt}>
-								{new Date(v.value.createdAt).toLocaleString()}
-							</time>
-							{#if isCurrent}
-								<span class="badge current-badge">current</span>
-							{/if}
-						</div>
-						<div class="actions">
-							{#if isCurrent}
-								<a href={docPath}>View</a>
-							{:else}
-								<a href={`${docPath}/v/${v.rkey}`}>View</a>
-							{/if}
-							{#if !isCurrent}
-								<a href={`${docPath}/diff?from=${v.rkey}&to=${versions[0].rkey}`}>
-									Diff vs current
-								</a>
-							{/if}
-							{#if prev}
-								<a href={`${docPath}/diff?from=${prev.rkey}&to=${v.rkey}`}>
-									Diff vs previous
-								</a>
-							{/if}
-						</div>
-					</div>
-					<p class="rkey">
-						<code>{v.rkey}</code>
-					</p>
-				</li>
-			{/each}
-		</ol>
+<svelte:head>
+	{#if loaded?.value.title}
+		<title>History · {loaded.value.title} — AT-RFC</title>
 	{/if}
+</svelte:head>
+
+{#if error}
+	<div class="column">
+		<p class="error">{error}</p>
+	</div>
+{:else if loaded === null}
+	<div class="column">
+		<p class="muted">Loading…</p>
+	</div>
+{:else}
+	<div class="column">
+		<nav class="crumb">
+			<a href={docPath} class="action">[ ← {loaded.value.title} ]</a>
+		</nav>
+
+		<header class="page-header">
+			<h1>Version history</h1>
+			<p class="muted">
+				{versions.length}
+				{versions.length === 1 ? 'version' : 'versions'} · newest first
+			</p>
+		</header>
+
+		{#if versions.length === 0}
+			<p class="muted">No versions found.</p>
+		{:else}
+			<ol class="versions">
+				{#each versions as v, i (v.uri)}
+					{@const isCurrent = i === 0}
+					{@const prev = versions[i + 1]}
+					{@const n = versions.length - i}
+					<li class="version" class:current={isCurrent}>
+						<div class="version-row">
+							<span class="version-num">v{n}</span>
+							{#if isCurrent}
+								<span class="status status-current">Current</span>
+							{:else}
+								<span class="status status-superseded">Superseded</span>
+							{/if}
+							<time class="version-date" datetime={v.value.createdAt}>
+								{formatDate(v.value.createdAt)}
+							</time>
+							<span class="version-rkey muted" title="Version rkey">{v.rkey}</span>
+							<nav class="version-actions">
+								{#if isCurrent}
+									<a class="action" href={docPath}>[ view ]</a>
+								{:else}
+									<a class="action" href={`${docPath}/v/${v.rkey}`}>[ view ]</a>
+								{/if}
+								{#if !isCurrent}
+									<a class="action" href={`${docPath}/diff?from=${v.rkey}&to=${versions[0].rkey}`}>
+										[ diff&nbsp;vs&nbsp;current ]
+									</a>
+								{/if}
+								{#if prev}
+									<a class="action" href={`${docPath}/diff?from=${prev.rkey}&to=${v.rkey}`}>
+										[ diff&nbsp;vs&nbsp;previous ]
+									</a>
+								{/if}
+							</nav>
+						</div>
+					</li>
+				{/each}
+			</ol>
+		{/if}
+	</div>
 {/if}
 
 <style>
-	.page-header {
-		margin-bottom: 1.5rem;
-		padding-bottom: 1rem;
-		border-bottom: 1px solid #e5e5e5;
-	}
 	.crumb {
-		margin: 0 0 0.5rem;
-		font-size: 0.9rem;
+		margin-bottom: var(--space-4);
+		font-size: var(--text-sm);
 	}
-	.crumb a {
-		color: #555;
-		text-decoration: none;
-	}
-	.crumb a:hover {
-		color: #000;
+
+	.page-header {
+		margin-bottom: var(--space-6);
+		padding-bottom: var(--space-4);
+		border-bottom: var(--border-thin) solid var(--rule);
 	}
 	.page-header h1 {
-		margin: 0;
-		font-size: 1.75rem;
+		font-size: var(--text-2xl);
+		font-weight: 700;
+		letter-spacing: var(--track-tight);
+		margin: 0 0 var(--space-1);
 	}
 	.muted {
-		color: #888;
-		margin: 0.25rem 0 0;
-		font-size: 0.9rem;
+		font-size: var(--text-sm);
 	}
+
 	.versions {
 		list-style: none;
-		padding: 0;
 		margin: 0;
+		padding: 0;
+	}
+	.version + .version {
+		border-top: var(--border-thin) solid var(--rule);
 	}
 	.version {
-		padding: 0.75rem 1rem;
-		border: 1px solid #e5e5e5;
-		border-radius: 6px;
-		margin-bottom: 0.75rem;
-		background: #fff;
+		padding: var(--space-4) 0;
 	}
-	.version.current {
-		border-color: #b6d4b6;
-		background: #f4faf4;
+	.version-row {
+		display: grid;
+		grid-template-columns: auto auto 1fr auto;
+		grid-template-areas:
+			'num status date rkey'
+			'actions actions actions actions';
+		row-gap: var(--space-2);
+		column-gap: var(--space-3);
+		align-items: baseline;
 	}
-	.row {
+	.version-num {
+		grid-area: num;
+		font-size: var(--text-md);
+		font-weight: 700;
+		letter-spacing: var(--track-tight);
+		color: var(--ink);
+		min-width: 4ch;
+	}
+	.version.current .version-num {
+		color: var(--accent);
+	}
+	.status {
+		grid-area: status;
+	}
+	.version-date {
+		grid-area: date;
+		font-size: var(--text-sm);
+		color: var(--ink-2);
+		font-variant-numeric: tabular-nums;
+	}
+	.version-rkey {
+		grid-area: rkey;
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		justify-self: end;
+		word-break: break-all;
+	}
+	.version-actions {
+		grid-area: actions;
 		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
 		flex-wrap: wrap;
+		gap: var(--space-4);
+		font-size: var(--text-sm);
 	}
-	.when {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-	}
-	.when time {
-		font-size: 0.95rem;
-	}
-	.badge {
-		display: inline-block;
-		padding: 0.1rem 0.45rem;
-		font-size: 0.75rem;
-		border-radius: 999px;
-		background: #e5f0e5;
-		color: #2d662d;
-		border: 1px solid #b6d4b6;
-	}
-	.actions {
-		display: flex;
-		gap: 1rem;
-		font-size: 0.9rem;
-	}
-	.actions a {
-		color: #226;
-		text-decoration: none;
-	}
-	.actions a:hover {
-		text-decoration: underline;
-	}
-	.rkey {
-		margin: 0.4rem 0 0;
-		font-size: 0.75rem;
-		color: #999;
-	}
-	.rkey code {
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-	}
-	.error {
-		color: #b00;
+
+	@media (max-width: 640px) {
+		.version-row {
+			grid-template-columns: auto 1fr;
+			grid-template-areas:
+				'num status'
+				'date date'
+				'rkey rkey'
+				'actions actions';
+		}
+		.version-rkey {
+			justify-self: start;
+		}
 	}
 </style>

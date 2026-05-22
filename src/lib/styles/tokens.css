@@ -1,0 +1,174 @@
+/*
+ * AT-RFC design tokens.
+ *
+ * Color is OKLCH. Neutrals are tinted toward warm cream (hue 85) on light
+ * surfaces and cool ink (hue 270) on dark, never pure #000 / #fff.
+ * Accent is oxblood (hue 25) — used for active links, current-version badges,
+ * focus rings, and the comment-anchor indicator. Restrained palette: paper +
+ * ink carries ~95% of every surface; accent stays under 10%.
+ */
+
+:root {
+	color-scheme: light;
+
+	/* Surfaces — warm bond-paper tints */
+	--surface: oklch(0.985 0.005 85);
+	--surface-raised: oklch(0.975 0.006 85);
+	--surface-sunken: oklch(0.955 0.008 85);
+	--surface-banner: oklch(0.96 0.012 85);
+
+	/* Ink — cool near-black for clean monospace contrast */
+	--ink: oklch(0.18 0.012 270);
+	--ink-2: oklch(0.36 0.01 270);
+	--ink-3: oklch(0.55 0.008 270);
+	--ink-4: oklch(0.7 0.006 270);
+
+	/* Hairlines */
+	--rule: oklch(0.85 0.006 85);
+	--rule-strong: oklch(0.72 0.008 85);
+
+	/* Accent — oxblood, stamped-seal energy */
+	--accent: oklch(0.45 0.15 25);
+	--accent-hover: oklch(0.38 0.16 25);
+	--accent-fade: oklch(0.94 0.035 25);
+	--accent-on: oklch(0.985 0.005 85);
+
+	/* State signals — muted on purpose, color is never the only cue */
+	--warn: oklch(0.55 0.12 70);
+	--warn-fade: oklch(0.95 0.04 80);
+	--addition: oklch(0.45 0.09 135);
+	--addition-fade: oklch(0.95 0.04 135);
+	--deletion: var(--accent);
+	--deletion-fade: var(--accent-fade);
+
+	/* Selection */
+	--selection-bg: oklch(0.85 0.06 25);
+	--selection-fg: var(--ink);
+
+	/* Typography */
+	--font-mono:
+		'IBM Plex Mono', ui-monospace, 'SFMono-Regular', 'Menlo', 'Consolas', 'Liberation Mono',
+		monospace;
+	--font-body: var(--font-mono);
+
+	/* Type scale — ratio 1.25 from 15px base */
+	--text-2xs: 0.6875rem; /* 11px — badges, line numbers */
+	--text-xs: 0.8125rem; /* 13px — metadata, captions */
+	--text-sm: 0.875rem; /* 14px — secondary UI */
+	--text-base: 0.9375rem; /* 15px — body */
+	--text-md: 1.0625rem; /* 17px — lead */
+	--text-lg: 1.1875rem; /* 19px — h3 */
+	--text-xl: 1.5rem; /* 24px — h2 */
+	--text-2xl: 1.875rem; /* 30px — h1 */
+	--text-3xl: 2.375rem; /* 38px — document title */
+
+	/* Line heights */
+	--leading-tight: 1.25;
+	--leading-snug: 1.4;
+	--leading-body: 1.65;
+	--leading-loose: 1.85;
+
+	/* Letter-spacing for monospace small caps & badges */
+	--track-caps: 0.08em;
+	--track-tight: -0.01em;
+
+	/* Spacing — 4px base */
+	--space-1: 0.25rem;
+	--space-2: 0.5rem;
+	--space-3: 0.75rem;
+	--space-4: 1rem;
+	--space-5: 1.5rem;
+	--space-6: 2rem;
+	--space-7: 3rem;
+	--space-8: 4rem;
+	--space-9: 6rem;
+
+	/* Columns — the 72ch rule is the project's spine */
+	--col-body: 72ch;
+	--col-wide: 100ch;
+	--col-gutter: 18ch;
+	--col-shell: 88rem;
+
+	/* Borders */
+	--border-thin: 1px;
+	--border-thick: 2px;
+
+	/* Motion */
+	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
+	--ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+	--dur-fast: 120ms;
+	--dur-mid: 220ms;
+	--dur-slow: 360ms;
+}
+
+/* Dark theme — quiet slab of ink, low-glare for late reading */
+:root[data-theme='dark'] {
+	color-scheme: dark;
+
+	--surface: oklch(0.18 0.012 270);
+	--surface-raised: oklch(0.22 0.012 270);
+	--surface-sunken: oklch(0.15 0.012 270);
+	--surface-banner: oklch(0.24 0.013 270);
+
+	--ink: oklch(0.93 0.005 85);
+	--ink-2: oklch(0.78 0.005 85);
+	--ink-3: oklch(0.6 0.006 270);
+	--ink-4: oklch(0.46 0.008 270);
+
+	--rule: oklch(0.3 0.012 270);
+	--rule-strong: oklch(0.42 0.012 270);
+
+	--accent: oklch(0.72 0.16 25);
+	--accent-hover: oklch(0.8 0.16 25);
+	--accent-fade: oklch(0.32 0.07 25);
+	--accent-on: oklch(0.18 0.012 270);
+
+	--warn: oklch(0.74 0.12 70);
+	--warn-fade: oklch(0.3 0.05 70);
+	--addition: oklch(0.66 0.1 135);
+	--addition-fade: oklch(0.3 0.05 135);
+
+	--selection-bg: oklch(0.42 0.1 25);
+	--selection-fg: var(--ink);
+}
+
+/* System preference — light is the implicit default, this only adds dark
+   when the user has not set an explicit theme. */
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme]) {
+		color-scheme: dark;
+
+		--surface: oklch(0.18 0.012 270);
+		--surface-raised: oklch(0.22 0.012 270);
+		--surface-sunken: oklch(0.15 0.012 270);
+		--surface-banner: oklch(0.24 0.013 270);
+
+		--ink: oklch(0.93 0.005 85);
+		--ink-2: oklch(0.78 0.005 85);
+		--ink-3: oklch(0.6 0.006 270);
+		--ink-4: oklch(0.46 0.008 270);
+
+		--rule: oklch(0.3 0.012 270);
+		--rule-strong: oklch(0.42 0.012 270);
+
+		--accent: oklch(0.72 0.16 25);
+		--accent-hover: oklch(0.8 0.16 25);
+		--accent-fade: oklch(0.32 0.07 25);
+		--accent-on: oklch(0.18 0.012 270);
+
+		--warn: oklch(0.74 0.12 70);
+		--warn-fade: oklch(0.3 0.05 70);
+		--addition: oklch(0.66 0.1 135);
+		--addition-fade: oklch(0.3 0.05 135);
+
+		--selection-bg: oklch(0.42 0.1 25);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--dur-fast: 0ms;
+		--dur-mid: 0ms;
+		--dur-slow: 0ms;
+	}
+}

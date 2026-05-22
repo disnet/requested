@@ -56,17 +56,40 @@
 			saving = false;
 		}
 	}
+
+	const authorHandle = $derived(auth.profile?.handle ?? auth.did ?? '');
 </script>
 
+<svelte:head>
+	{#if loaded?.value.title}
+		<title>Editing {loaded.value.title} — AT-RFC</title>
+	{/if}
+</svelte:head>
+
 {#if error}
-	<p class="error">{error}</p>
+	<div class="column">
+		<p class="error">{error}</p>
+	</div>
 {:else if loaded === null}
-	<p class="muted">Loading…</p>
+	<div class="column">
+		<p class="muted">Loading…</p>
+	</div>
 {:else if auth.status !== 'signed-in'}
-	<p class="muted">Sign in to edit documents.</p>
+	<div class="column">
+		<p class="muted">Sign in to edit documents.</p>
+	</div>
 {:else if !isOwner}
-	<p class="error">You can only edit your own documents.</p>
+	<div class="column">
+		<p class="error">You can only edit your own documents.</p>
+	</div>
 {:else}
+	<div class="stripe-banner author-banner">
+		<span>Status: Draft · Editing — saving creates a new version</span>
+		<span class="author-banner-meta">
+			Author: <strong>{authorHandle}</strong>
+		</span>
+	</div>
+
 	<form
 		class="composer"
 		onsubmit={(e) => {
@@ -75,65 +98,122 @@
 		}}
 	>
 		<header class="doc-header">
-			<h1>{loaded.value.title}</h1>
-			<p class="muted">
-				Editing creates a new version. Title isn't editable in this slice.
-			</p>
+			<div class="doc-header-meta">
+				<span class="meta-key">Editing</span>
+				<span class="muted mono-tight">{loaded.rkey}</span>
+				{#if dirty}
+					<span class="dirty">* unsaved</span>
+				{/if}
+			</div>
+			<h1 class="doc-header-title">{loaded.value.title}</h1>
+			<p class="doc-header-hint muted">Title is fixed for this version. Edit the body below.</p>
 		</header>
-		<MarkdownEditor bind:value={body} />
+
+		<div class="editor-frame">
+			<div class="editor-rail">
+				<span class="rail-label">Body</span>
+				<span class="rail-hint muted">markdown · 72ch guide on the right</span>
+			</div>
+			<MarkdownEditor bind:value={body} />
+		</div>
+
 		<div class="actions">
-			<a href={`/d/${page.params.handle}/${page.params.rkey}`} class="cancel">Cancel</a>
-			<button type="submit" disabled={saving || !dirty}>
-				{saving ? 'Saving…' : dirty ? 'Save new version' : 'No changes'}
+			<a href={`/d/${page.params.handle}/${page.params.rkey}`} class="action">[ cancel ]</a>
+			<button type="submit" class="bracket-btn bracket-btn-primary" disabled={saving || !dirty}>
+				{saving ? '[ saving… ]' : dirty ? '[ save new version ]' : '[ no changes ]'}
 			</button>
 		</div>
 	</form>
 {/if}
 
 <style>
+	.author-banner {
+		max-width: var(--col-wide);
+		margin: 0 auto var(--space-5);
+		display: flex;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		gap: var(--space-3);
+	}
+	.author-banner strong {
+		font-weight: 500;
+		color: var(--ink);
+	}
+	.author-banner-meta {
+		text-transform: none;
+		letter-spacing: 0;
+		color: var(--ink-3);
+	}
+
 	.composer {
+		max-width: var(--col-wide);
+		margin: 0 auto;
 		display: flex;
 		flex-direction: column;
-		gap: 1rem;
+		gap: var(--space-5);
 	}
-	.doc-header h1 {
+
+	.doc-header {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		padding-bottom: var(--space-4);
+		border-bottom: var(--border-thin) solid var(--rule);
+	}
+	.doc-header-meta {
+		display: flex;
+		gap: var(--space-3);
+		align-items: baseline;
+		font-size: var(--text-xs);
+	}
+	.meta-key {
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-3);
+	}
+	.mono-tight {
+		font-size: var(--text-xs);
+		color: var(--ink-3);
+		letter-spacing: var(--track-tight);
+	}
+	.dirty {
+		color: var(--accent);
+		font-weight: 500;
+	}
+	.doc-header-title {
+		font-size: var(--text-2xl);
+		font-weight: 700;
+		letter-spacing: var(--track-tight);
+		line-height: var(--leading-tight);
 		margin: 0;
-		font-size: 1.75rem;
 	}
-	.doc-header p {
-		margin: 0.25rem 0 0;
-		font-size: 0.9rem;
+	.doc-header-hint {
+		margin: 0;
+		font-size: var(--text-sm);
 	}
+
+	.editor-frame {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+	.editor-rail {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		font-size: var(--text-2xs);
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-3);
+	}
+	.rail-label {
+		color: var(--ink-2);
+	}
+
 	.actions {
 		display: flex;
 		align-items: center;
 		justify-content: flex-end;
-		gap: 1rem;
-	}
-	.cancel {
-		color: #555;
-		text-decoration: none;
-	}
-	.cancel:hover {
-		color: #000;
-	}
-	button {
-		padding: 0.5rem 1rem;
-		font: inherit;
-		border: 1px solid #222;
-		background: #222;
-		color: white;
-		border-radius: 6px;
-		cursor: pointer;
-	}
-	button:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
-	}
-	.muted {
-		color: #888;
-	}
-	.error {
-		color: #b00;
+		gap: var(--space-4);
 	}
 </style>

@@ -1,0 +1,311 @@
+/*
+ * Base styles. Reset + element defaults + utility primitives used across
+ * routes. Component-specific styles stay in their .svelte files.
+ */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	background: var(--surface);
+	color: var(--ink);
+	font-family: var(--font-body);
+	font-size: 16px;
+	line-height: var(--leading-body);
+	-webkit-text-size-adjust: 100%;
+	text-rendering: optimizeLegibility;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+body {
+	margin: 0;
+	min-height: 100dvh;
+	display: flex;
+	flex-direction: column;
+}
+
+::selection {
+	background: var(--selection-bg);
+	color: var(--selection-fg);
+}
+
+/* Strong, theme-aware focus rings. Honors :focus-visible so keyboard users
+   get them and mouse clicks don't. */
+:where(a, button, input, textarea, select, [tabindex]):focus-visible {
+	outline: var(--border-thick) solid var(--accent);
+	outline-offset: 2px;
+	border-radius: 1px;
+}
+
+/* Reset some structural defaults */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+ul,
+ol,
+figure,
+blockquote,
+pre {
+	margin: 0;
+}
+
+ul,
+ol {
+	padding: 0;
+}
+
+/* Links — ink-colored, oxblood on hover, thicker underline on hover */
+a {
+	color: var(--ink);
+	text-decoration: underline;
+	text-decoration-color: var(--rule-strong);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+	transition:
+		color var(--dur-fast) var(--ease-out-quart),
+		text-decoration-color var(--dur-fast) var(--ease-out-quart),
+		text-decoration-thickness var(--dur-fast) var(--ease-out-quart);
+}
+a:hover {
+	color: var(--accent);
+	text-decoration-color: currentColor;
+	text-decoration-thickness: 2px;
+}
+
+/* Form controls inherit the monospace font by default */
+input,
+textarea,
+button,
+select {
+	font: inherit;
+	color: inherit;
+}
+
+/* Strip default button chrome — components opt in to a button style */
+button {
+	background: transparent;
+	border: 0;
+	padding: 0;
+	cursor: pointer;
+	color: inherit;
+}
+
+/* Default code rendering — used outside the prose region too */
+code,
+kbd,
+samp {
+	font-family: var(--font-mono);
+	font-size: 0.95em;
+}
+
+/* Utility: the 72ch document column. Use on any block that should obey the
+   project's spine width. */
+.column {
+	width: 100%;
+	max-width: var(--col-body);
+	margin-inline: auto;
+}
+
+.column-wide {
+	width: 100%;
+	max-width: var(--col-wide);
+	margin-inline: auto;
+}
+
+/* The visible right-edge rule for the 72ch guide. Applied via wrapper on the
+   editor and (optionally) reader. */
+.column-ruled {
+	position: relative;
+}
+.column-ruled::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	right: -1px;
+	width: 1px;
+	background: var(--rule);
+	pointer-events: none;
+}
+
+/* Status pill — used for DRAFT / CURRENT / SUPERSEDED. */
+.status {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-2);
+	padding: 2px var(--space-2);
+	font-size: var(--text-2xs);
+	font-weight: 500;
+	letter-spacing: var(--track-caps);
+	text-transform: uppercase;
+	border: var(--border-thin) solid var(--rule-strong);
+	color: var(--ink-2);
+	background: transparent;
+	border-radius: 0;
+	white-space: nowrap;
+}
+.status-current {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+.status-superseded {
+	color: var(--warn);
+	border-color: var(--warn);
+}
+.status-draft {
+	color: var(--ink-3);
+	border-color: var(--ink-3);
+}
+
+/* Muted secondary text */
+.muted {
+	color: var(--ink-3);
+}
+.error {
+	color: var(--accent);
+}
+
+/* Inline action — text-button used in metadata blocks and ledgers */
+.action {
+	font-family: var(--font-mono);
+	font-size: inherit;
+	color: var(--ink-2);
+	text-decoration: underline;
+	text-decoration-color: var(--rule-strong);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+	background: transparent;
+	border: 0;
+	padding: 0;
+	cursor: pointer;
+	transition:
+		color var(--dur-fast) var(--ease-out-quart),
+		text-decoration-color var(--dur-fast) var(--ease-out-quart);
+}
+.action:hover {
+	color: var(--accent);
+	text-decoration-color: currentColor;
+	text-decoration-thickness: 2px;
+}
+.action[aria-current='page'],
+.action.is-active {
+	color: var(--accent);
+}
+
+/* Bracketed action — `[ sign in ]` style. The brackets are real characters
+   so they copy/paste; they're not pseudo-element decorations. */
+.bracket-btn {
+	font-family: var(--font-mono);
+	font-size: var(--text-sm);
+	color: var(--ink);
+	background: transparent;
+	border: var(--border-thin) solid var(--rule-strong);
+	padding: var(--space-2) var(--space-3);
+	cursor: pointer;
+	letter-spacing: var(--track-tight);
+	transition:
+		color var(--dur-fast) var(--ease-out-quart),
+		border-color var(--dur-fast) var(--ease-out-quart),
+		background var(--dur-fast) var(--ease-out-quart);
+}
+.bracket-btn:hover {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+.bracket-btn:disabled {
+	opacity: 0.5;
+	cursor: progress;
+}
+
+.bracket-btn-primary {
+	color: var(--accent-on);
+	background: var(--accent);
+	border-color: var(--accent);
+}
+.bracket-btn-primary:hover {
+	background: var(--accent-hover);
+	border-color: var(--accent-hover);
+	color: var(--accent-on);
+}
+
+/* Inputs — minimal underline-style, no rounded corners */
+.field {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: var(--space-3);
+	align-items: baseline;
+}
+.field > .field-label {
+	color: var(--ink-3);
+	font-size: var(--text-sm);
+	letter-spacing: var(--track-caps);
+	text-transform: uppercase;
+	white-space: nowrap;
+}
+.field > .field-control {
+	display: block;
+	width: 100%;
+	background: transparent;
+	border: 0;
+	border-bottom: var(--border-thin) solid var(--rule-strong);
+	padding: var(--space-2) 0;
+	color: var(--ink);
+	font-family: var(--font-mono);
+	font-size: var(--text-base);
+	line-height: var(--leading-snug);
+	transition: border-color var(--dur-fast) var(--ease-out-quart);
+}
+.field > .field-control:hover {
+	border-bottom-color: var(--ink-3);
+}
+.field > .field-control:focus {
+	outline: none;
+	border-bottom-color: var(--accent);
+	border-bottom-width: var(--border-thick);
+	padding-bottom: calc(var(--space-2) - 1px);
+}
+.field > .field-control::placeholder {
+	color: var(--ink-4);
+}
+
+/* Diagonal-stripe banner used on the editor and superseded version views */
+.stripe-banner {
+	font-family: var(--font-mono);
+	font-size: var(--text-xs);
+	font-weight: 500;
+	letter-spacing: var(--track-caps);
+	text-transform: uppercase;
+	color: var(--ink-2);
+	padding: var(--space-2) var(--space-4);
+	border-block: var(--border-thin) solid var(--rule-strong);
+	background:
+		repeating-linear-gradient(
+			135deg,
+			transparent 0,
+			transparent 8px,
+			color-mix(in oklch, var(--ink-3) 8%, transparent) 8px,
+			color-mix(in oklch, var(--ink-3) 8%, transparent) 16px
+		),
+		var(--surface-banner);
+}
+.stripe-banner-warn {
+	color: var(--warn);
+	border-color: var(--warn);
+	background:
+		repeating-linear-gradient(
+			135deg,
+			transparent 0,
+			transparent 8px,
+			color-mix(in oklch, var(--warn) 16%, transparent) 8px,
+			color-mix(in oklch, var(--warn) 16%, transparent) 16px
+		),
+		var(--surface-banner);
+}

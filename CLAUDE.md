@@ -46,6 +46,7 @@ Comments pin to a specific `documentVersion` CID. When the document moves on, `d
 `src/lib/atproto/client.ts` builds a loopback OAuth client with **granular scopes only**: `atproto` plus one `repo:<NSID>` per collection the app writes. **Do not** request `transition:generic` — the consent screen must list only what the app actually touches. Memory note: `feedback-atproto-oauth-scopes`.
 
 When adding a new writable NSID:
+
 1. Add a `repo:<NSID>` entry to `SCOPES` in `client.ts`.
 2. The loopback `client_id` encodes scope as a query param, so changing `SCOPES` invalidates existing sessions — users must sign out and back in.
 

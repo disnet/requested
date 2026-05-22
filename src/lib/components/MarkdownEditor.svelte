@@ -19,6 +19,50 @@
 					basicSetup,
 					markdown(),
 					EditorView.lineWrapping,
+					EditorView.theme(
+						{
+							'&': {
+								backgroundColor: 'transparent',
+								color: 'var(--ink)',
+								fontFamily: 'var(--font-mono)',
+								fontSize: 'var(--text-base)',
+								lineHeight: 'var(--leading-body)'
+							},
+							'.cm-content': {
+								caretColor: 'var(--accent)',
+								padding: 'var(--space-4) 0'
+							},
+							'.cm-cursor, .cm-dropCursor': {
+								borderLeftColor: 'var(--accent)',
+								borderLeftWidth: '2px'
+							},
+							'&.cm-focused .cm-selectionBackground, ::selection': {
+								backgroundColor: 'var(--selection-bg)'
+							},
+							'.cm-gutters': {
+								backgroundColor: 'var(--surface-sunken)',
+								color: 'var(--ink-4)',
+								border: '0',
+								borderRight: 'var(--border-thin) solid var(--rule)',
+								fontSize: 'var(--text-xs)'
+							},
+							'.cm-activeLineGutter': {
+								backgroundColor: 'transparent',
+								color: 'var(--accent)'
+							},
+							'.cm-activeLine': {
+								backgroundColor: 'color-mix(in oklch, var(--accent-fade) 35%, transparent)'
+							},
+							'.cm-selectionMatch': {
+								backgroundColor: 'var(--accent-fade)'
+							},
+							'.cm-matchingBracket': {
+								outline: '1px solid var(--accent)',
+								color: 'var(--accent) !important'
+							}
+						},
+						{ dark: false }
+					),
 					EditorView.updateListener.of((update) => {
 						if (update.docChanged && !suppressOutput) {
 							value = update.state.doc.toString();
@@ -49,18 +93,37 @@
 <div bind:this={container} class="editor"></div>
 
 <style>
+	.editor {
+		position: relative;
+	}
 	.editor :global(.cm-editor) {
-		border: 1px solid #ccc;
-		border-radius: 6px;
-		min-height: 24rem;
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.95rem;
+		border: var(--border-thin) solid var(--rule-strong);
+		background: var(--surface);
+		min-height: 28rem;
 	}
 	.editor :global(.cm-editor.cm-focused) {
-		outline: 2px solid #226;
+		outline: var(--border-thick) solid var(--accent);
 		outline-offset: -2px;
+		border-color: var(--accent);
 	}
 	.editor :global(.cm-scroller) {
 		max-height: 70vh;
+	}
+	/* 72ch right-edge guide. CodeMirror's content area takes the gutter offset
+	   into account through left padding, so the guide sits at the right side
+	   of the typing column. */
+	.editor :global(.cm-content) {
+		position: relative;
+		max-width: calc(72ch + var(--space-4));
+	}
+	.editor :global(.cm-content::after) {
+		content: '';
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		right: 0;
+		width: 1px;
+		background: var(--rule);
+		pointer-events: none;
 	}
 </style>
