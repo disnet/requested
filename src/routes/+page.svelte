@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { auth } from '$lib/atproto/auth.svelte';
+	import { listMyDocuments, type DocumentSummary } from '$lib/atproto/documents';
 
 	let handle = $state('');
 	let submitting = $state(false);
-	let sessionHandle = $state<string | null>(null);
+	let docs = $state<DocumentSummary[] | null>(null);
+	let docsError = $state<string | null>(null);
 
 	async function onSubmit(e: SubmitEvent) {
 		e.preventDefault();
@@ -17,25 +19,28 @@
 		}
 	}
 
-	// Smoke test that the authenticated agent can hit the user's PDS. We use
-	// com.atproto.server.getSession (covered by the `atproto` scope) rather
-	// than appview calls like app.bsky.actor.getProfile (those would require
-	// the additional `transition:generic` scope to service-proxy).
+	// When signed in, load this user's documents.
 	$effect(() => {
 		const agent = auth.agent;
-		if (!agent) {
-			sessionHandle = null;
+		const did = auth.did;
+		if (!agent || !did) {
+			docs = null;
+			docsError = null;
 			return;
 		}
 		void (async () => {
 			try {
-				const res = await agent.com.atproto.server.getSession();
-				sessionHandle = res.data.handle;
+				docs = await listMyDocuments(agent, did);
+				docsError = null;
 			} catch (err) {
-				sessionHandle = `error: ${err instanceof Error ? err.message : String(err)}`;
+				docsError = err instanceof Error ? err.message : String(err);
+				docs = [];
 			}
 		})();
 	});
+
+	// `handle` for URL is the profile handle when known, else the DID.
+	const authorSlug = $derived(auth.profile?.handle ?? auth.did ?? '');
 </script>
 
 {#if auth.status === 'loading'}
@@ -64,17 +69,33 @@
 		{/if}
 	</section>
 {:else}
-	<section>
-		<h1>You're signed in</h1>
-		<dl>
-			<dt>DID</dt>
-			<dd><code>{auth.did}</code></dd>
-			<dt>Handle (via getSession)</dt>
-			<dd><code>{sessionHandle ?? '…'}</code></dd>
-		</dl>
-		<p class="muted">
-			Document authoring and the rest of the app will live here. Auth is the only thing wired up so far.
-		</p>
+	<section class="docs">
+		<header class="docs-header">
+			<h1>Your documents</h1>
+			<a class="cta" href="/new">+ New document</a>
+		</header>
+		{#if docs === null}
+			<p class="muted">Loading documents…</p>
+		{:else if docsError}
+			<p class="error">{docsError}</p>
+		{:else if docs.length === 0}
+			<p class="muted">
+				No documents yet. <a href="/new">Write your first RFC</a> to publish it to your PDS.
+			</p>
+		{:else}
+			<ul class="doc-list">
+				{#each docs as doc (doc.uri)}
+					<li>
+						<a href={`/d/${authorSlug}/${doc.rkey}`}>
+							<span class="title">{doc.value.title}</span>
+							<time datetime={doc.value.createdAt}>
+								{new Date(doc.value.createdAt).toLocaleDateString()}
+							</time>
+						</a>
+					</li>
+				{/each}
+			</ul>
+		{/if}
 	</section>
 {/if}
 
@@ -136,19 +157,56 @@
 	.muted {
 		color: #888;
 	}
-	dl {
-		display: grid;
-		grid-template-columns: max-content 1fr;
-		gap: 0.5rem 1rem;
-		max-width: 36rem;
+	.docs-header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1rem;
+		margin-bottom: 1.5rem;
 	}
-	dt {
-		font-weight: 600;
-	}
-	dd {
+	.docs-header h1 {
 		margin: 0;
+		font-size: 1.5rem;
 	}
-	code {
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	.cta {
+		padding: 0.4rem 0.75rem;
+		background: #222;
+		color: white;
+		text-decoration: none;
+		border-radius: 6px;
+		font-size: 0.9rem;
+	}
+	.cta:hover {
+		background: #000;
+	}
+	.doc-list {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		border: 1px solid #e5e5e5;
+		border-radius: 8px;
+		overflow: hidden;
+	}
+	.doc-list li + li {
+		border-top: 1px solid #f0f0f0;
+	}
+	.doc-list a {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 1rem;
+		padding: 0.75rem 1rem;
+		text-decoration: none;
+		color: inherit;
+	}
+	.doc-list a:hover {
+		background: #fafafa;
+	}
+	.doc-list .title {
+		font-weight: 500;
+	}
+	.doc-list time {
+		font-size: 0.85rem;
+		color: #888;
 	}
 </style>

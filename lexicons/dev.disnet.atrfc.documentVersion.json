@@ -1,0 +1,38 @@
+{
+	"lexicon": 1,
+	"id": "dev.disnet.atrfc.documentVersion",
+	"defs": {
+		"main": {
+			"type": "record",
+			"description": "An immutable snapshot of a document body. Each save creates a new version; the parent document record's currentVersion is updated to point here.",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["document", "body", "createdAt"],
+				"properties": {
+					"document": {
+						"type": "string",
+						"format": "at-uri",
+						"description": "AT-URI of the dev.disnet.atrfc.document this version belongs to. Not a strongRef because the document record mutates over time (currentVersion changes on every edit) — pinning to a CID would always be stale."
+					},
+					"body": {
+						"type": "string",
+						"maxLength": 400000,
+						"maxGraphemes": 200000,
+						"description": "Markdown source. Rendered client-side; no embedded HTML is trusted."
+					},
+					"createdAt": {
+						"type": "string",
+						"format": "datetime",
+						"description": "When this version was saved."
+					},
+					"previousVersion": {
+						"type": "ref",
+						"ref": "com.atproto.repo.strongRef",
+						"description": "Strong ref to the prior version, forming a chain. Absent on the first version. Versions are immutable so a CID-pinned ref is stable."
+					}
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,33 @@
+{
+	"lexicon": 1,
+	"id": "dev.disnet.atrfc.document",
+	"defs": {
+		"main": {
+			"type": "record",
+			"description": "A versioned markdown RFC document. The body lives in separate documentVersion records; this record holds the title and a pointer to the current version.",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["title", "createdAt"],
+				"properties": {
+					"title": {
+						"type": "string",
+						"maxLength": 600,
+						"maxGraphemes": 300,
+						"description": "Human-readable title shown in lists and headers."
+					},
+					"createdAt": {
+						"type": "string",
+						"format": "datetime",
+						"description": "When the document was first created (does not change across versions)."
+					},
+					"currentVersion": {
+						"type": "ref",
+						"ref": "com.atproto.repo.strongRef",
+						"description": "Strong ref to the dev.disnet.atrfc.documentVersion record that represents the current head. Absent only transiently during initial creation, before the first version write completes."
+					}
+				}
+			}
+		}
+	}
+}
