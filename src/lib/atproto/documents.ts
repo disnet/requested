@@ -171,7 +171,7 @@ export async function listMyDocuments(agent: Agent, did: string): Promise<Docume
 
 type GetRecordResponse<T> = { uri: string; cid: string; value: T };
 
-async function fetchRecord<T>(
+export async function fetchRecord<T>(
 	pds: string,
 	repo: string,
 	collection: string,

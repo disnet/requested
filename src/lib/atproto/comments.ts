@@ -1,11 +1,13 @@
 import type { Agent } from '@atproto/api';
-import { getVersionByUri, parseAtUri } from './documents';
+import { fetchRecord, getVersionByUri, parseAtUri, resolvePdsEndpoint } from './documents';
 import { COMMENT_NSID, type CommentRecord, type StrongRef } from './lexicons';
+import { listBacklinks } from './constellation';
 
 export type LoadedComment = {
 	uri: string;
 	cid: string;
 	rkey: string;
+	did: string;
 	value: CommentRecord;
 };
 
@@ -40,9 +42,10 @@ export async function createComment(
 
 // ---------- reads ----------
 
-// Lists the signed-in user's own comments on a given document. Comments on
-// other people's documents that are scattered across foreign PDSes need a
-// backlink indexer (Constellation) — that comes in a later slice.
+// Lists the signed-in user's own comments on a given document by scanning their
+// own repo. This is the latency-free path — Constellation's index can lag a
+// freshly-written comment by tens of seconds, so listAllCommentsOn unions this
+// in when an agent is available.
 export async function listMyCommentsOn(
 	agent: Agent,
 	did: string,
@@ -58,9 +61,58 @@ export async function listMyCommentsOn(
 			uri: r.uri,
 			cid: r.cid,
 			rkey: parseAtUri(r.uri).rkey,
+			did,
 			value: r.value as CommentRecord
 		}))
 		.filter((c) => c.value.document === documentUri);
+}
+
+// Lists all comments on a document across atproto, by asking Constellation for
+// every record in dev.disnet.atrfc.comment whose `document` field points at the
+// document's at-uri, then hydrating each one from its home PDS.
+//
+// Per-record failures (commenter's PDS down, record deleted between the index
+// snapshot and our read, etc.) are swallowed so a single broken PDS can't take
+// the whole comment list down.
+export async function listCommentsViaConstellation(
+	documentUri: string,
+	options: { signal?: AbortSignal; maxComments?: number } = {}
+): Promise<LoadedComment[]> {
+	const backlinks = await listBacklinks(
+		documentUri,
+		{ collection: COMMENT_NSID, path: 'document' },
+		{ signal: options.signal, maxRecords: options.maxComments }
+	);
+
+	const settled = await Promise.allSettled(
+		backlinks.map(async (b): Promise<LoadedComment> => {
+			const pds = await resolvePdsEndpoint(b.did);
+			const rec = await fetchRecord<CommentRecord>(pds, b.did, b.collection, b.rkey);
+			return { uri: rec.uri, cid: rec.cid, rkey: b.rkey, did: b.did, value: rec.value };
+		})
+	);
+
+	return settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+}
+
+// Cross-PDS comment list: Constellation as the primary source, unioned with the
+// signed-in user's own listRecords (when available) to mask indexing latency on
+// just-posted comments. Dedupe is by at-uri.
+export async function listAllCommentsOn(
+	documentUri: string,
+	options: { agent?: Agent | null; myDid?: string | null; signal?: AbortSignal } = {}
+): Promise<LoadedComment[]> {
+	const [remote, mine] = await Promise.all([
+		listCommentsViaConstellation(documentUri, { signal: options.signal }),
+		options.agent && options.myDid
+			? listMyCommentsOn(options.agent, options.myDid, documentUri).catch(() => [])
+			: Promise.resolve([] as LoadedComment[])
+	]);
+
+	const byUri = new Map<string, LoadedComment>();
+	for (const c of remote) byUri.set(c.uri, c);
+	for (const c of mine) byUri.set(c.uri, c);
+	return [...byUri.values()];
 }
 
 // ---------- shift heuristic ----------

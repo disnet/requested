@@ -9,7 +9,7 @@
 	import {
 		createComment,
 		describeCommentVersionState,
-		listMyCommentsOn,
+		listAllCommentsOn,
 		type CommentVersionState,
 		type LoadedComment
 	} from '$lib/atproto/comments';
@@ -22,6 +22,7 @@
 
 	let comments = $state<LoadedComment[]>([]);
 	let commentStates = $state<Map<string, CommentVersionState>>(new Map());
+	let commenterProfiles = $state<Map<string, Profile>>(new Map());
 	let commentsError = $state<string | null>(null);
 
 	let composerOpen = $state(false);
@@ -37,6 +38,7 @@
 		error = null;
 		comments = [];
 		commentStates = new Map();
+		commenterProfiles = new Map();
 		commentsError = null;
 		void (async () => {
 			try {
@@ -54,23 +56,39 @@
 	});
 
 	$effect(() => {
+		const doc = loaded;
+		if (!doc) return;
+		// Re-runs when auth resolves so a signed-in user's own freshly-posted
+		// comments get unioned in via listMyCommentsOn.
 		const agent = auth.agent;
 		const myDid = auth.did;
-		const doc = loaded;
-		if (!agent || !myDid || !doc) return;
-		void loadComments(agent, myDid, doc);
+		void loadComments(doc, agent, myDid);
 	});
 
 	async function loadComments(
-		agent: NonNullable<ReturnType<typeof getAgent>>,
-		myDid: string,
-		doc: LoadedDocument
+		doc: LoadedDocument,
+		agent: ReturnType<typeof getAgent>,
+		myDid: string | null
 	) {
 		commentsError = null;
 		try {
-			const list = await listMyCommentsOn(agent, myDid, doc.uri);
+			const list = await listAllCommentsOn(doc.uri, { agent, myDid });
 			list.sort((a, b) => a.value.createdAt.localeCompare(b.value.createdAt));
 			comments = list;
+
+			const uniqueDids = [...new Set(list.map((c) => c.did))];
+			void Promise.all(
+				uniqueDids.map(async (did) => {
+					if (commenterProfiles.has(did)) return;
+					try {
+						const p = await fetchProfile(did);
+						commenterProfiles = new Map(commenterProfiles).set(did, p);
+					} catch {
+						// Profile lookup is display-only; falling back to the DID is fine.
+					}
+				})
+			);
+
 			if (doc.version) {
 				const current = {
 					uri: doc.version.uri,
@@ -159,7 +177,7 @@
 				{ line }
 			);
 			closeComposer();
-			await loadComments(agent, myDid, doc);
+			await loadComments(doc, agent, myDid);
 		} catch (err) {
 			composerError = err instanceof Error ? err.message : String(err);
 		} finally {
@@ -245,11 +263,7 @@
 		{/if}
 
 		{#if comments.length === 0 && !commentsError}
-			<p class="muted">
-				{auth.status === 'signed-in'
-					? 'No comments from you yet on this document.'
-					: 'Sign in to see and write comments.'}
-			</p>
+			<p class="muted">No comments yet on this document.</p>
 		{:else}
 			{#if groupedComments.docLevel.length > 0}
 				<div class="comment-group">
@@ -291,8 +305,16 @@
 
 {#snippet commentCard(c: LoadedComment)}
 	{@const state = commentStates.get(c.uri)}
+	{@const profile = commenterProfiles.get(c.did)}
 	<article class="comment">
 		<div class="comment-meta">
+			<span class="commenter">
+				{#if profile?.avatar}
+					<img class="avatar" src={profile.avatar} alt="" />
+				{/if}
+				<span>{profile?.handle ?? c.did}</span>
+			</span>
+			<span class="sep">·</span>
 			<time datetime={c.value.createdAt}>
 				{new Date(c.value.createdAt).toLocaleString()}
 			</time>
@@ -475,6 +497,12 @@
 		font-size: 0.8rem;
 		color: #777;
 		margin-bottom: 0.25rem;
+	}
+	.commenter {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: #333;
 	}
 	.badge {
 		display: inline-block;
