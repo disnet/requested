@@ -196,6 +196,50 @@ export async function getVersionByUri(uri: string): Promise<DocumentVersionRecor
 	return v.value;
 }
 
+export type LoadedVersion = {
+	uri: string;
+	cid: string;
+	rkey: string;
+	value: DocumentVersionRecord;
+};
+
+// Fetches a single documentVersion by did + rkey. Used by the version-view and
+// diff routes where both parts come from URL params.
+export async function getVersion(did: string, vrkey: string): Promise<LoadedVersion> {
+	const pds = await resolvePdsEndpoint(did);
+	const v = await fetchRecord<DocumentVersionRecord>(pds, did, DOCUMENT_VERSION_NSID, vrkey);
+	return { uri: v.uri, cid: v.cid, rkey: vrkey, value: v.value };
+}
+
+// Walks the previousVersion chain starting from the document's currentVersion.
+// Returns versions in newest→oldest order. Stops cleanly if a link in the chain
+// is unreachable (e.g. a version record was deleted) so the UI can still show
+// the prefix we did manage to load.
+export async function listVersionChain(did: string, rkey: string): Promise<LoadedVersion[]> {
+	const pds = await resolvePdsEndpoint(did);
+	const doc = await fetchRecord<DocumentRecord>(pds, did, DOCUMENT_NSID, rkey);
+	if (!doc.value.currentVersion) return [];
+
+	const versions: LoadedVersion[] = [];
+	let nextUri: string | undefined = doc.value.currentVersion.uri;
+	while (nextUri) {
+		const vrkey: string = parseAtUri(nextUri).rkey;
+		try {
+			const v = await fetchRecord<DocumentVersionRecord>(
+				pds,
+				did,
+				DOCUMENT_VERSION_NSID,
+				vrkey
+			);
+			versions.push({ uri: v.uri, cid: v.cid, rkey: vrkey, value: v.value });
+			nextUri = v.value.previousVersion?.uri;
+		} catch {
+			break;
+		}
+	}
+	return versions;
+}
+
 // Reads a document and its current version from any user's PDS (unauthenticated).
 // Used by view + edit pages so the same code path works for the signed-in user
 // and for visitors viewing someone else's RFC.

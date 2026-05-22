@@ -207,6 +207,8 @@
 				<time datetime={loaded.version.value.createdAt}>
 					{new Date(loaded.version.value.createdAt).toLocaleString()}
 				</time>
+				<span class="sep">·</span>
+				<a href={`/d/${page.params.handle}/${page.params.rkey}/history`}>History</a>
 				{#if isOwner}
 					<span class="sep">·</span>
 					<a href={`/d/${page.params.handle}/${page.params.rkey}/edit`}>Edit</a>
