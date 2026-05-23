@@ -855,7 +855,7 @@
 		<p class="error">This document has no published version yet.</p>
 	</div>
 {:else}
-	<div class="doc-shell" class:has-rail={isRail}>
+	<div class="doc-shell">
 		<article class="document" bind:this={articleEl}>
 			<header class="meta-block" aria-label="Document metadata">
 				<div class="meta-row">
@@ -1511,12 +1511,18 @@
 		max-width: var(--col-body);
 		margin-inline: auto;
 	}
-	.doc-shell.has-rail {
-		max-width: calc(var(--col-body) + var(--space-7) + var(--rail-width));
-		display: grid;
-		grid-template-columns: minmax(0, var(--col-body)) var(--rail-width);
-		column-gap: var(--space-7);
-		align-items: start;
+	/* Reserve the rail column from first paint via a CSS media query that
+	   mirrors the JS breakpoint in onMount. The grid is set up before the
+	   `<aside class="rail">` mounts and before comments arrive, so the
+	   article column doesn't reflow when either lands. */
+	@media (min-width: 1200px) {
+		.doc-shell {
+			max-width: calc(var(--col-body) + var(--space-7) + var(--rail-width));
+			display: grid;
+			grid-template-columns: minmax(0, var(--col-body)) var(--rail-width);
+			column-gap: var(--space-7);
+			align-items: start;
+		}
 	}
 
 	.document {
@@ -2047,8 +2053,10 @@
 	.prose :global(.md-block.is-active > .md-comment-count) {
 		color: var(--accent);
 	}
-	.doc-shell.has-rail .prose :global(.md-block.has-comments > .md-comment-btn) {
-		top: 1.4em;
+	@media (min-width: 1200px) {
+		.doc-shell .prose :global(.md-block.has-comments > .md-comment-btn) {
+			top: 1.4em;
+		}
 	}
 
 	/* --- Sub-anchor affordances ---
@@ -2215,6 +2223,15 @@
 		margin: var(--space-8) auto 0;
 		padding-top: var(--space-5);
 		border-top: var(--border-thick) solid var(--rule-strong);
+	}
+	/* SSR renders this section because `isRail` starts as false (no viewport
+	   available on the server). On desktop the CSS-driven grid above hides
+	   it pre-hydration, so when `isRail` flips true in onMount and Svelte
+	   removes it from the DOM, nothing shifts. */
+	@media (min-width: 1200px) {
+		.doc-comments {
+			display: none;
+		}
 	}
 	.doc-comments-head {
 		display: flex;
