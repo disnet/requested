@@ -3,7 +3,6 @@
 	import {
 		getDocument,
 		listVersionChain,
-		resolveHandleToDid,
 		type LoadedDocument,
 		type LoadedVersion
 	} from '$lib/atproto/documents';
@@ -13,13 +12,12 @@
 	let error = $state<string | null>(null);
 
 	$effect(() => {
-		const { handle, rkey } = page.params as { handle: string; rkey: string };
+		const { did, rkey } = page.params as { did: string; rkey: string };
 		loaded = null;
 		versions = [];
 		error = null;
 		void (async () => {
 			try {
-				const did = await resolveHandleToDid(handle);
 				const [doc, chain] = await Promise.all([
 					getDocument(did, rkey),
 					listVersionChain(did, rkey)
@@ -32,7 +30,7 @@
 		})();
 	});
 
-	const docPath = $derived(`/d/${page.params.handle}/${page.params.rkey}`);
+	const docPath = $derived(`/d/${page.params.did}/${page.params.rkey}`);
 
 	function formatDate(iso: string): string {
 		const d = new Date(iso);

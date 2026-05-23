@@ -60,10 +60,10 @@ For unauthenticated appview reads (e.g. profiles in `profile.ts`), hit `https://
 
 - `/` — sign-in form when signed-out, list of signed-in user's documents otherwise.
 - `/new` — create a new document.
-- `/d/[handle]/[rkey]` — view a document (works for any user's handle/DID).
-- `/d/[handle]/[rkey]/edit` — edit (only meaningful when signed in as the author).
-- `/d/[handle]/[rkey]/history` — version chain walk.
-- `/d/[handle]/[rkey]/v/[vrkey]` — view a specific version.
-- `/d/[handle]/[rkey]/diff` — diff between versions.
+- `/d/[did]/[rkey]` — view a document.
+- `/d/[did]/[rkey]/edit` — edit (only meaningful when signed in as the author).
+- `/d/[did]/[rkey]/history` — version chain walk.
+- `/d/[did]/[rkey]/v/[vrkey]` — view a specific version.
+- `/d/[did]/[rkey]/diff` — diff between versions.
 
-The `[handle]` segment may be either a handle or a DID; resolve with `resolveHandleToDid` before talking to a PDS.
+URLs use the author's DID (not handle) so shared/written-down links stay stable across handle renames — we have no appview to maintain handle→DID redirects. `resolveHandleToDid` is still used at sign-in (users enter a handle there) but route pages pass `page.params.did` straight to the PDS.

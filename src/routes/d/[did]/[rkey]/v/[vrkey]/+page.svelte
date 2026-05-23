@@ -5,7 +5,6 @@
 		getVersion,
 		listVersionChain,
 		parseAtUri,
-		resolveHandleToDid,
 		type LoadedDocument,
 		type LoadedVersion
 	} from '$lib/atproto/documents';
@@ -19,8 +18,8 @@
 	let versionIndex = $state<{ n: number; total: number } | null>(null);
 
 	$effect(() => {
-		const { handle, rkey, vrkey } = page.params as {
-			handle: string;
+		const { did, rkey, vrkey } = page.params as {
+			did: string;
 			rkey: string;
 			vrkey: string;
 		};
@@ -31,7 +30,6 @@
 		versionIndex = null;
 		void (async () => {
 			try {
-				const did = await resolveHandleToDid(handle);
 				const [doc, v, profile] = await Promise.all([
 					getDocument(did, rkey),
 					getVersion(did, vrkey),
@@ -52,7 +50,7 @@
 		})();
 	});
 
-	const docPath = $derived(`/d/${page.params.handle}/${page.params.rkey}`);
+	const docPath = $derived(`/d/${page.params.did}/${page.params.rkey}`);
 	const isCurrent = $derived(
 		loaded?.version != null && version != null && loaded.version.cid === version.cid
 	);

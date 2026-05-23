@@ -3,12 +3,7 @@
 	import { page } from '$app/state';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
 	import { auth } from '$lib/atproto/auth.svelte';
-	import {
-		getDocument,
-		resolveHandleToDid,
-		saveNewVersion,
-		type LoadedDocument
-	} from '$lib/atproto/documents';
+	import { getDocument, saveNewVersion, type LoadedDocument } from '$lib/atproto/documents';
 
 	let loaded = $state<LoadedDocument | null>(null);
 	let body = $state('');
@@ -17,14 +12,13 @@
 	let saving = $state(false);
 
 	$effect(() => {
-		const { handle, rkey } = page.params as { handle: string; rkey: string };
+		const { did, rkey } = page.params as { did: string; rkey: string };
 		loaded = null;
 		body = '';
 		originalBody = '';
 		error = null;
 		void (async () => {
 			try {
-				const did = await resolveHandleToDid(handle);
 				const doc = await getDocument(did, rkey);
 				if (!doc.version) {
 					error = 'This document has no current version to edit.';
@@ -50,7 +44,7 @@
 		error = null;
 		try {
 			await saveNewVersion(agent, did, loaded, body);
-			await goto(`/d/${page.params.handle}/${page.params.rkey}`);
+			await goto(`/d/${page.params.did}/${page.params.rkey}`);
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 			saving = false;
@@ -118,7 +112,7 @@
 		</div>
 
 		<div class="actions">
-			<a href={`/d/${page.params.handle}/${page.params.rkey}`} class="action">[ cancel ]</a>
+			<a href={`/d/${page.params.did}/${page.params.rkey}`} class="action">[ cancel ]</a>
 			<button type="submit" class="bracket-btn bracket-btn-primary" disabled={saving || !dirty}>
 				{saving ? '[ saving… ]' : dirty ? '[ save new version ]' : '[ no changes ]'}
 			</button>

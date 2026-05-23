@@ -5,7 +5,6 @@
 		getDocument,
 		getVersion,
 		parseAtUri,
-		resolveHandleToDid,
 		type LoadedDocument,
 		type LoadedVersion
 	} from '$lib/atproto/documents';
@@ -16,7 +15,7 @@
 	let error = $state<string | null>(null);
 
 	$effect(() => {
-		const { handle, rkey } = page.params as { handle: string; rkey: string };
+		const { did, rkey } = page.params as { did: string; rkey: string };
 		const fromRkey = page.url.searchParams.get('from');
 		const toRkey = page.url.searchParams.get('to');
 		loaded = null;
@@ -25,7 +24,6 @@
 		error = null;
 		void (async () => {
 			try {
-				const did = await resolveHandleToDid(handle);
 				const doc = await getDocument(did, rkey);
 				loaded = doc;
 				if (!doc.version) {
@@ -86,7 +84,7 @@
 		return { added, removed };
 	});
 
-	const docPath = $derived(`/d/${page.params.handle}/${page.params.rkey}`);
+	const docPath = $derived(`/d/${page.params.did}/${page.params.rkey}`);
 
 	function formatDate(iso: string): string {
 		const d = new Date(iso);

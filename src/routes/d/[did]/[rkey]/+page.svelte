@@ -2,12 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { auth } from '$lib/atproto/auth.svelte';
-	import {
-		getDocument,
-		listVersionChain,
-		resolveHandleToDid,
-		type LoadedDocument
-	} from '$lib/atproto/documents';
+	import { getDocument, listVersionChain, type LoadedDocument } from '$lib/atproto/documents';
 	import {
 		authoritativeResolution,
 		createComment,
@@ -82,7 +77,7 @@
 	let railEl = $state<HTMLElement | undefined>(undefined);
 
 	$effect(() => {
-		const { handle, rkey } = page.params as { handle: string; rkey: string };
+		const { did, rkey } = page.params as { did: string; rkey: string };
 		loaded = null;
 		author = null;
 		error = null;
@@ -102,7 +97,6 @@
 		activeLine = null;
 		void (async () => {
 			try {
-				const did = await resolveHandleToDid(handle);
 				const [doc, profile] = await Promise.all([
 					getDocument(did, rkey),
 					fetchProfile(did).catch(() => null)
@@ -629,7 +623,7 @@
 									{#if author?.avatar}
 										<img class="meta-avatar" src={author.avatar} alt="" />
 									{/if}
-									<a href={`/d/${page.params.handle}`} class="author-link">{authorHandle}</a>
+									<a href={`/d/${page.params.did}`} class="author-link">{authorHandle}</a>
 								</span>
 								<span class="meta-author-did mono-tight">{authorDid}</span>
 							</span>
@@ -652,14 +646,12 @@
 				<h1 class="doc-title">{loaded.value.title}</h1>
 
 				<nav class="meta-actions" aria-label="Document actions">
-					<a class="action" href={`/d/${page.params.handle}/${page.params.rkey}/history`}>
+					<a class="action" href={`/d/${page.params.did}/${page.params.rkey}/history`}>
 						[ history ]
 					</a>
-					<a class="action" href={`/d/${page.params.handle}/${page.params.rkey}/diff`}>[ diff ]</a>
+					<a class="action" href={`/d/${page.params.did}/${page.params.rkey}/diff`}>[ diff ]</a>
 					{#if isOwner}
-						<a class="action" href={`/d/${page.params.handle}/${page.params.rkey}/edit`}>
-							[ edit ]
-						</a>
+						<a class="action" href={`/d/${page.params.did}/${page.params.rkey}/edit`}> [ edit ] </a>
 					{/if}
 				</nav>
 			</header>

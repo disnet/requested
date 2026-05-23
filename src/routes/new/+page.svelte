@@ -26,8 +26,7 @@
 		error = null;
 		try {
 			const { docRkey } = await createDocument(agent, did, title.trim(), body);
-			const slug = auth.profile?.handle ?? did;
-			await goto(`/d/${slug}/${docRkey}`);
+			await goto(`/d/${did}/${docRkey}`);
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 			saving = false;

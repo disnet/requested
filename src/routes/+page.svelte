@@ -40,7 +40,7 @@
 		})();
 	});
 
-	const authorSlug = $derived(auth.profile?.handle ?? auth.did ?? '');
+	const authorDid = $derived(auth.did ?? '');
 
 	function rfcNumber(index: number, total: number): string {
 		// Reverse the index so the oldest doc is RFC-0001. `docs` is sorted
@@ -140,7 +140,7 @@
 			<ol class="ledger" aria-label="Your documents">
 				{#each docs as doc, i (doc.uri)}
 					<li class="ledger-row">
-						<a class="ledger-link" href={`/d/${authorSlug}/${doc.rkey}`}>
+						<a class="ledger-link" href={`/d/${authorDid}/${doc.rkey}`}>
 							<span class="ledger-num">{rfcNumber(i, docs.length)}</span>
 							<span class="ledger-title">{doc.value.title}</span>
 							<span class="ledger-dots" aria-hidden="true"></span>
