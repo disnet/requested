@@ -169,6 +169,7 @@
 	}
 	.signin-meta .meta-row {
 		display: flex;
+		align-items: baseline;
 		gap: var(--space-3);
 		padding: var(--space-1) 0;
 	}
@@ -177,7 +178,8 @@
 		text-transform: uppercase;
 		letter-spacing: var(--track-caps);
 		color: var(--ink-3);
-		min-width: 8ch;
+		width: 8ch;
+		flex-shrink: 0;
 	}
 	.meta-val {
 		color: var(--ink);
