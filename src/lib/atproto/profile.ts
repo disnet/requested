@@ -20,3 +20,19 @@ export async function fetchProfile(actor: string, signal?: AbortSignal): Promise
 	}
 	return res.json();
 }
+
+export async function searchActorsTypeahead(
+	q: string,
+	limit = 8,
+	signal?: AbortSignal
+): Promise<Profile[]> {
+	const url = new URL('/xrpc/app.bsky.actor.searchActorsTypeahead', APPVIEW);
+	url.searchParams.set('q', q);
+	url.searchParams.set('limit', String(limit));
+	const res = await fetch(url, { signal });
+	if (!res.ok) {
+		throw new Error(`searchActorsTypeahead: ${res.status} ${res.statusText}`);
+	}
+	const data = (await res.json()) as { actors?: Profile[] };
+	return data.actors ?? [];
+}

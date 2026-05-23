@@ -2,11 +2,82 @@
 	import { resolve } from '$app/paths';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { listMyDocuments, type DocumentSummary } from '$lib/atproto/documents';
+	import { searchActorsTypeahead, type Profile } from '$lib/atproto/profile';
 
 	let handle = $state('');
 	let submitting = $state(false);
 	let docs = $state<DocumentSummary[] | null>(null);
 	let docsError = $state<string | null>(null);
+
+	let suggestions = $state<Profile[]>([]);
+	let activeIndex = $state(-1);
+	let suggestionsOpen = $state(false);
+	let lookupSeq = 0;
+	let lookupAbort: AbortController | null = null;
+	let lookupTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function onHandleInput() {
+		activeIndex = -1;
+		const q = handle.trim();
+		if (lookupTimer) clearTimeout(lookupTimer);
+		if (lookupAbort) lookupAbort.abort();
+		if (q.length < 2) {
+			suggestions = [];
+			suggestionsOpen = false;
+			return;
+		}
+		const mySeq = ++lookupSeq;
+		lookupTimer = setTimeout(async () => {
+			lookupAbort = new AbortController();
+			try {
+				const actors = await searchActorsTypeahead(q, 8, lookupAbort.signal);
+				if (mySeq !== lookupSeq) return; // stale
+				suggestions = actors;
+				suggestionsOpen = actors.length > 0;
+			} catch (err) {
+				if (mySeq !== lookupSeq) return;
+				if (err instanceof DOMException && err.name === 'AbortError') return;
+				suggestions = [];
+				suggestionsOpen = false;
+			}
+		}, 150);
+	}
+
+	function pickSuggestion(p: Profile) {
+		handle = p.handle;
+		suggestions = [];
+		suggestionsOpen = false;
+		activeIndex = -1;
+	}
+
+	function onHandleKeydown(e: KeyboardEvent) {
+		if (!suggestionsOpen || suggestions.length === 0) return;
+		if (e.key === 'ArrowDown') {
+			e.preventDefault();
+			activeIndex = (activeIndex + 1) % suggestions.length;
+		} else if (e.key === 'ArrowUp') {
+			e.preventDefault();
+			activeIndex = activeIndex <= 0 ? suggestions.length - 1 : activeIndex - 1;
+		} else if (e.key === 'Enter' && activeIndex >= 0) {
+			e.preventDefault();
+			pickSuggestion(suggestions[activeIndex]);
+		} else if (e.key === 'Escape') {
+			suggestionsOpen = false;
+			activeIndex = -1;
+		}
+	}
+
+	function onHandleBlur() {
+		// Delay so click on a suggestion registers first.
+		setTimeout(() => {
+			suggestionsOpen = false;
+			activeIndex = -1;
+		}, 120);
+	}
+
+	function onHandleFocus() {
+		if (suggestions.length > 0) suggestionsOpen = true;
+	}
 
 	async function onSubmit(e: SubmitEvent) {
 		e.preventDefault();
@@ -91,18 +162,61 @@
 		<form class="signin-form" onsubmit={onSubmit}>
 			<label class="field">
 				<span class="field-label">Handle</span>
-				<input
-					class="field-control"
-					type="text"
-					placeholder="alice.bsky.social"
-					bind:value={handle}
-					autocomplete="username"
-					required
-					disabled={submitting}
-				/>
+				<div class="combobox">
+					<input
+						class="field-control"
+						type="text"
+						placeholder="alice.bsky.social"
+						bind:value={handle}
+						oninput={onHandleInput}
+						onkeydown={onHandleKeydown}
+						onfocus={onHandleFocus}
+						onblur={onHandleBlur}
+						autocomplete="off"
+						autocapitalize="off"
+						autocorrect="off"
+						spellcheck="false"
+						role="combobox"
+						aria-autocomplete="list"
+						aria-expanded={suggestionsOpen}
+						aria-controls="handle-suggestions"
+						aria-activedescendant={activeIndex >= 0 ? `handle-sugg-${activeIndex}` : undefined}
+						required
+						disabled={submitting}
+					/>
+					{#if suggestionsOpen && suggestions.length > 0}
+						<ul id="handle-suggestions" class="suggestions" role="listbox">
+							{#each suggestions as actor, i (actor.did)}
+								<li
+									id="handle-sugg-{i}"
+									role="option"
+									aria-selected={i === activeIndex}
+									class="suggestion"
+									class:active={i === activeIndex}
+									onmousedown={(e) => {
+										e.preventDefault();
+										pickSuggestion(actor);
+									}}
+								>
+									{#if actor.avatar}
+										<img class="sugg-avatar" src={actor.avatar} alt="" />
+									{:else}
+										<span class="sugg-avatar sugg-avatar-empty" aria-hidden="true"></span>
+									{/if}
+									<span class="sugg-text">
+										<span class="sugg-handle">@{actor.handle}</span>
+										{#if actor.displayName}
+											<span class="sugg-name">{actor.displayName}</span>
+										{/if}
+									</span>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
 			</label>
 			<button type="submit" class="bracket-btn bracket-btn-primary" disabled={submitting}>
-				{submitting ? '[ redirecting… ]' : '[ sign in with atproto ]'}
+				{submitting ? '[ redirecting… ]' : '[ sign in with atmosphere account ]'}
 			</button>
 		</form>
 		{#if auth.error}
@@ -111,8 +225,8 @@
 
 		<footer class="signin-foot">
 			<p class="muted">
-				Requested uses atproto OAuth. You'll be redirected to your PDS to grant scoped access.
-				Requested never sees your password.
+				Sign in with your atmosphere account — Requested redirects you to your PDS to grant scoped
+				access. Requested never sees your password.
 			</p>
 		</footer>
 	</section>
@@ -211,6 +325,70 @@
 	}
 	.signin-form .bracket-btn {
 		align-self: stretch;
+	}
+	.combobox {
+		position: relative;
+	}
+	.suggestions {
+		position: absolute;
+		top: calc(100% + 2px);
+		left: 0;
+		right: 0;
+		z-index: 10;
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		background: var(--surface);
+		border: var(--border-thin) solid var(--rule-strong);
+		max-height: 18rem;
+		overflow-y: auto;
+		box-shadow: 0 4px 12px rgb(0 0 0 / 0.08);
+	}
+	.suggestion {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		padding: var(--space-2) var(--space-3);
+		cursor: pointer;
+		border-bottom: var(--border-thin) solid var(--rule);
+	}
+	.suggestion:last-child {
+		border-bottom: none;
+	}
+	.suggestion:hover,
+	.suggestion.active {
+		background: var(--surface-raised);
+	}
+	.sugg-avatar {
+		width: 1.5rem;
+		height: 1.5rem;
+		flex-shrink: 0;
+		border-radius: 50%;
+		object-fit: cover;
+		background: var(--surface-sunken);
+	}
+	.sugg-avatar-empty {
+		display: inline-block;
+		border: var(--border-thin) solid var(--rule);
+	}
+	.sugg-text {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+	.sugg-handle {
+		font-size: var(--text-sm);
+		color: var(--ink);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.sugg-name {
+		font-size: var(--text-xs);
+		color: var(--ink-3);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.signin-error {
 		text-align: center;
