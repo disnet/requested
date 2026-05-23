@@ -17,6 +17,7 @@
 	} from '$lib/atproto/comments';
 	import { fetchProfile, type Profile } from '$lib/atproto/profile';
 	import { renderMarkdown, renderMarkdownBlocks } from '$lib/markdown';
+	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
 	let loaded = $state<LoadedDocument | null>(null);
 	let author = $state<Profile | null>(null);
@@ -35,7 +36,6 @@
 	let composerBody = $state('');
 	let composerPosting = $state(false);
 	let composerError = $state<string | null>(null);
-	let composerBodyEl: HTMLTextAreaElement | undefined;
 
 	// Viewport-driven layout mode. Above the breakpoint, line comments live in
 	// a right-side rail anchored to each block. Below it, they collapse into
@@ -159,9 +159,7 @@
 
 	const isOwner = $derived(loaded != null && auth.did === loaded.did);
 	const renderedBlocks = $derived(
-		loaded?.version
-			? renderMarkdownBlocks(loaded.version.value.body, { stripLeadingH1: true })
-			: []
+		loaded?.version ? renderMarkdownBlocks(loaded.version.value.body, { stripLeadingH1: true }) : []
 	);
 
 	// Display fields for the metadata block
@@ -264,9 +262,7 @@
 				const lineAttr = card.dataset.line;
 				let desired = floor;
 				if (lineAttr) {
-					const block = article.querySelector<HTMLElement>(
-						`.md-block[data-md-line="${lineAttr}"]`
-					);
+					const block = article.querySelector<HTMLElement>(`.md-block[data-md-line="${lineAttr}"]`);
 					if (block) {
 						desired = block.getBoundingClientRect().top - articleRect.top;
 					}
@@ -315,8 +311,9 @@
 			next.add(line);
 			expandedLines = next;
 		}
-		// Defer focus until the textarea has been mounted by the each-loop.
-		requestAnimationFrame(() => composerBodyEl?.focus());
+		// CommentEditor autofocuses itself on mount; openComposer always
+		// remounts the editor (different snippet site / unmounts on previous
+		// close), so no imperative focus call is needed here.
 	}
 
 	function closeComposer() {
@@ -336,12 +333,12 @@
 		activeLine = line;
 	}
 
-	async function submitComment(event: Event) {
-		event.preventDefault();
+	async function postComment() {
 		const agent = auth.agent;
 		const myDid = auth.did;
 		const doc = loaded;
 		const current = composer;
+		if (composerPosting) return;
 		if (!agent || !myDid || !doc?.version || !current) return;
 		if (!composerBody.trim()) {
 			composerError = 'Comment cannot be empty.';
@@ -369,11 +366,13 @@
 		}
 	}
 
-	function handleComposerKey(event: KeyboardEvent) {
-		if (event.key === 'Escape' && composer && !composerPosting) {
-			event.preventDefault();
-			closeComposer();
-		}
+	function submitComment(event: Event) {
+		event.preventDefault();
+		void postComment();
+	}
+
+	function onComposerEscape() {
+		if (composer && !composerPosting) closeComposer();
 	}
 
 	function formatDate(iso: string | null): string {
@@ -383,6 +382,15 @@
 		const m = String(d.getUTCMonth() + 1).padStart(2, '0');
 		const day = String(d.getUTCDate()).padStart(2, '0');
 		return `${y}-${m}-${day}`;
+	}
+
+	// Extracts a single line from the current document body. Returns the trimmed
+	// line text, or '' if the line is out of range. Used to render the source-
+	// line excerpt in comment card heads so the card identifies its anchor by
+	// content, not just line number.
+	function getLineText(body: string | undefined, line: number | null): string {
+		if (!body || line == null) return '';
+		return (body.split('\n')[line - 1] ?? '').trim();
 	}
 
 	function formatRelative(iso: string): string {
@@ -507,6 +515,11 @@
 						onfocusin={() => setActiveLine(block.line)}
 						onfocusout={() => setActiveLine(null)}
 					>
+						{#if blockCommentCount > 0 && isRail}
+							<span class="md-comment-count" aria-hidden="true">
+								[{blockCommentCount}]
+							</span>
+						{/if}
 						{#if auth.status === 'signed-in'}
 							<button
 								type="button"
@@ -568,11 +581,7 @@
 						{#if composer?.line == null && composer !== null}
 							<!-- whole-doc composer is open and will appear in the doc card -->
 						{:else}
-							<button
-								type="button"
-								class="rail-doc-btn"
-								onclick={() => openComposer(null)}
-							>
+							<button type="button" class="rail-doc-btn" onclick={() => openComposer(null)}>
 								[ comment on document ]
 							</button>
 						{/if}
@@ -655,21 +664,13 @@
 	<form class="composer composer-inline" onsubmit={submitComment}>
 		<header class="composer-header">
 			{#if composer?.line != null}
-				<span class="anchor-tag">L{composer.line}</span>
-				<span class="muted">Commenting on line {composer.line}</span>
+				<span class="muted">Commenting on this line</span>
 			{:else}
 				<span class="anchor-tag">doc</span>
 				<span class="muted">Commenting on the whole document</span>
 			{/if}
 		</header>
-		<textarea
-			class="composer-body"
-			rows="4"
-			placeholder="Write a comment in markdown…"
-			bind:value={composerBody}
-			bind:this={composerBodyEl}
-			onkeydown={handleComposerKey}
-		></textarea>
+		<CommentEditor bind:value={composerBody} onEscape={onComposerEscape} onSubmit={postComment} />
 		{#if composerError}
 			<p class="error">{composerError}</p>
 		{/if}
@@ -677,12 +678,7 @@
 			<button type="submit" class="bracket-btn bracket-btn-primary" disabled={composerPosting}>
 				{composerPosting ? '[ posting… ]' : '[ post comment ]'}
 			</button>
-			<button
-				type="button"
-				class="bracket-btn"
-				onclick={closeComposer}
-				disabled={composerPosting}
-			>
+			<button type="button" class="bracket-btn" onclick={closeComposer} disabled={composerPosting}>
 				[ cancel ]
 			</button>
 		</div>
@@ -694,21 +690,22 @@
 	{@const shift = state?.kind === 'line-stale' ? state.shift : null}
 	<h3 class="comment-anchor">
 		{#if shift?.kind === 'shifted'}
-			<span class="anchor-tag">L{shift.to}</span>
-			<span>Line {shift.to} <span class="shift">was L{shift.from}</span></span>
+			<code class="line-excerpt" title={shift.text || '(empty line)'}>
+				{shift.text || '(empty line)'}
+			</code>
+			<span class="anchor-aside">moved</span>
 		{:else if shift?.kind === 'lost'}
-			<span class="anchor-tag anchor-tag-warn">L{line}</span>
-			<span class="shift">Line {line} — no longer present</span>
+			<code class="line-excerpt line-excerpt-lost" title={shift.text || '(empty line)'}>
+				{shift.text || '(empty line)'}
+			</code>
+			<span class="anchor-aside anchor-aside-warn">removed</span>
 		{:else}
-			<span class="anchor-tag">L{line}</span>
-			<span>Line {line}</span>
+			{@const lineText = getLineText(loaded?.version?.value.body, line)}
+			<code class="line-excerpt" title={lineText || '(empty line)'}>
+				{lineText || '(empty line)'}
+			</code>
 		{/if}
 	</h3>
-	{#if shift?.kind === 'shifted' || shift?.kind === 'lost'}
-		<p class="snippet" title="Original line text">
-			<code>{shift.text || '(empty line)'}</code>
-		</p>
-	{/if}
 {/snippet}
 
 {#snippet commentCard(c: LoadedComment)}
@@ -745,23 +742,22 @@
 			<span class="rail-tag rail-tag-doc">DOC</span>
 			<span class="rail-card-label">on the whole document</span>
 		{:else if shift?.kind === 'shifted'}
-			<span class="rail-tag">L{shift.to}</span>
-			<span class="rail-card-label">
-				<span class="shift">was L{shift.from}</span>
-			</span>
+			<code class="rail-line-excerpt" title={shift.text || '(empty line)'}>
+				{shift.text || '(empty line)'}
+			</code>
+			<span class="rail-card-aside">moved</span>
 		{:else if shift?.kind === 'lost'}
-			<span class="rail-tag rail-tag-warn">L{item.line}</span>
-			<span class="rail-card-label shift">line removed</span>
+			<code class="rail-line-excerpt rail-line-excerpt-lost" title={shift.text || '(empty line)'}>
+				{shift.text || '(empty line)'}
+			</code>
+			<span class="rail-card-aside rail-card-aside-warn">removed</span>
 		{:else}
-			<span class="rail-tag">L{item.line}</span>
-			<span class="rail-card-label">line {item.line}</span>
+			{@const lineText = getLineText(loaded?.version?.value.body, item.line)}
+			<code class="rail-line-excerpt" title={lineText || '(empty line)'}>
+				{lineText || '(empty line)'}
+			</code>
 		{/if}
 	</header>
-	{#if shift?.kind === 'shifted' || shift?.kind === 'lost'}
-		<p class="rail-snippet" title="Original line text">
-			<code>{shift.text || '(empty line)'}</code>
-		</p>
-	{/if}
 {/snippet}
 
 {#snippet commentBody(c: LoadedComment)}
@@ -808,7 +804,7 @@
 
 	/* --- Rail --- */
 	.doc-shell {
-		--rail-width: 30ch;
+		--rail-width: 40ch;
 	}
 	.rail {
 		position: relative;
@@ -902,7 +898,9 @@
 	.rail-card-head {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: var(--space-2);
+		row-gap: 4px;
 		margin-bottom: var(--space-2);
 	}
 	.rail-tag {
@@ -921,25 +919,44 @@
 		border-color: var(--ink-3);
 		color: var(--ink-3);
 	}
-	.rail-tag-warn {
-		border-color: var(--warn);
-		color: var(--warn);
-	}
 	.rail-card-label {
 		font-size: var(--text-2xs);
 		letter-spacing: var(--track-caps);
 		text-transform: uppercase;
 		color: var(--ink-3);
 	}
-	.rail-snippet {
-		margin: 0 0 var(--space-2);
-		font-size: var(--text-2xs);
-		color: var(--ink-3);
-	}
-	.rail-snippet code {
+	.rail-line-excerpt {
+		flex: 1 1 6ch;
+		min-width: 0;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		line-height: var(--leading-snug);
+		color: var(--ink);
 		background: var(--surface-sunken);
-		padding: 1px 4px;
+		padding: 1px 6px;
 		border: var(--border-thin) solid var(--rule);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		letter-spacing: var(--track-tight);
+	}
+	.rail-line-excerpt-lost {
+		color: var(--ink-3);
+		text-decoration: line-through;
+		text-decoration-color: var(--warn);
+	}
+	.rail-card-aside {
+		font-size: var(--text-2xs);
+		letter-spacing: var(--track-caps);
+		text-transform: uppercase;
+		color: var(--ink-3);
+		font-style: italic;
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+	.rail-card-aside-warn {
+		color: var(--warn);
+		font-style: normal;
 	}
 
 	.rail-comment + .rail-comment {
@@ -1241,6 +1258,28 @@
 		color: var(--accent);
 	}
 
+	/* Persistent gutter count: when a block has comments, show [N] in the left
+	   gutter so the body itself signals where comments live. Rail-mode only —
+	   inline mode already has .line-chip. The [+] action button drops below
+	   the count when both are present, so they never collide. */
+	.prose :global(.md-comment-count) {
+		position: absolute;
+		left: -3rem;
+		top: 0.1em;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		color: var(--ink-3);
+		pointer-events: none;
+		transition: color var(--dur-fast) var(--ease-out-quart);
+	}
+	.prose :global(.md-block.is-active > .md-comment-count) {
+		color: var(--accent);
+	}
+	.doc-shell.has-rail .prose :global(.md-block.has-comments > .md-comment-btn) {
+		top: 1.4em;
+	}
+
 	.prose-sm {
 		font-size: var(--text-sm);
 		line-height: var(--leading-snug);
@@ -1325,6 +1364,19 @@
 	.inline-thread .comment {
 		margin-left: 0;
 	}
+	/* The thread sits inside `.prose`, so `.prose :global(h3)` would otherwise
+	   bleed in: large/bold text plus a `0.0.1.`-style section counter from
+	   `h3::before`. Override both here. */
+	.inline-thread .comment-anchor {
+		font-size: var(--text-sm);
+		font-weight: 500;
+		margin: 0 0 var(--space-3);
+		padding-bottom: 0;
+		border-bottom: 0;
+	}
+	.inline-thread .comment-anchor::before {
+		content: none;
+	}
 
 	.composer {
 		display: flex;
@@ -1342,34 +1394,44 @@
 	.composer-header {
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
+		flex-wrap: wrap;
+		gap: var(--space-2);
 		font-size: var(--text-sm);
-	}
-	.composer-body {
-		font-family: var(--font-mono);
-		font-size: var(--text-base);
-		line-height: var(--leading-body);
-		padding: var(--space-3);
-		background: var(--surface);
-		border: var(--border-thin) solid var(--rule-strong);
-		color: var(--ink);
-		resize: vertical;
-		min-height: 6rem;
-	}
-	.composer-body:focus {
-		outline: var(--border-thick) solid var(--accent);
-		outline-offset: -2px;
-		border-color: var(--accent);
 	}
 	.composer-actions {
 		display: flex;
-		gap: var(--space-3);
+		flex-wrap: wrap;
+		gap: var(--space-2);
+	}
+
+	/* Nested composer (inside a rail card or inline thread): drop the
+	   double chrome (border + bg + outer padding) so it reads as part of
+	   its parent card rather than a box-in-a-box, and shrink type so the
+	   header fits on one line at narrow widths. */
+	.rail-card .composer-inline,
+	.inline-thread .composer-inline {
+		margin: var(--space-3) 0 0;
+		padding: 0;
+		gap: var(--space-2);
+		background: transparent;
+		border: 0;
+	}
+	.rail-card .composer-header,
+	.inline-thread .composer-header {
+		font-size: var(--text-xs);
+	}
+	.rail-card .composer-actions :global(.bracket-btn),
+	.inline-thread .composer-actions :global(.bracket-btn) {
+		font-size: var(--text-xs);
+		padding: 4px var(--space-2);
 	}
 
 	.comment-anchor {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: var(--space-3);
+		row-gap: var(--space-1);
 		font-size: var(--text-sm);
 		font-weight: 500;
 		margin-bottom: var(--space-3);
@@ -1386,25 +1448,42 @@
 		color: var(--accent);
 		min-width: 4ch;
 		text-align: center;
+		flex-shrink: 0;
 	}
-	.anchor-tag-warn {
-		border-color: var(--warn);
-		color: var(--warn);
+	.line-excerpt {
+		flex: 1 1 8ch;
+		min-width: 0;
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+		font-weight: 400;
+		line-height: var(--leading-snug);
+		color: var(--ink);
+		background: var(--surface-sunken);
+		padding: 2px 8px;
+		border: var(--border-thin) solid var(--rule);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		letter-spacing: var(--track-tight);
 	}
-	.shift {
-		color: var(--warn);
+	.line-excerpt-lost {
+		color: var(--ink-3);
+		text-decoration: line-through;
+		text-decoration-color: var(--warn);
+	}
+	.anchor-aside {
+		font-size: var(--text-2xs);
+		letter-spacing: var(--track-caps);
+		text-transform: uppercase;
+		color: var(--ink-3);
 		font-style: italic;
 		font-weight: 400;
+		white-space: nowrap;
+		flex-shrink: 0;
 	}
-	.snippet {
-		margin: 0 0 var(--space-3);
-		font-size: var(--text-sm);
-		color: var(--ink-3);
-	}
-	.snippet code {
-		background: var(--surface-sunken);
-		padding: 1px 4px;
-		border: var(--border-thin) solid var(--rule);
+	.anchor-aside-warn {
+		color: var(--warn);
+		font-style: normal;
 	}
 
 	.comment {
