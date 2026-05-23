@@ -43,14 +43,26 @@ Comments pin to a specific `documentVersion` CID. When the document moves on, `d
 
 ### OAuth scopes (important)
 
-`src/lib/atproto/client.ts` builds a loopback OAuth client with **granular scopes only**: `atproto` plus one `repo:<NSID>` per collection the app writes. **Do not** request `transition:generic` — the consent screen must list only what the app actually touches. Memory note: `feedback-atproto-oauth-scopes`.
+`src/lib/atproto/client.ts` builds an OAuth client with **granular scopes only**: `atproto` plus one `repo:<NSID>` per collection the app writes. **Do not** request `transition:generic` — the consent screen must list only what the app actually touches. Memory note: `feedback-atproto-oauth-scopes`.
+
+The same file picks between **two client metadata shapes** at runtime based on `window.location.origin`:
+
+- **Dev / loopback** (`127.0.0.1`): synthetic metadata via `buildAtprotoLoopbackClientMetadata`. The `client_id` is derived from scope per the atproto loopback-client convention.
+- **Production** (`https://requested.fyi`): a literal metadata object whose `client_id` is `https://requested.fyi/client-metadata.json`. The atproto authorization server fetches that URL directly, so the file at **`static/client-metadata.json`** must stay byte-identical to the literal in `client.ts` — `SCOPES`, `redirect_uris`, all of it.
 
 When adding a new writable NSID:
 
 1. Add a `repo:<NSID>` entry to `SCOPES` in `client.ts`.
-2. The loopback `client_id` encodes scope as a query param, so changing `SCOPES` invalidates existing sessions — users must sign out and back in.
+2. Add the same `repo:<NSID>` token to the `scope` string in `static/client-metadata.json`.
+3. Changing scope changes the loopback `client_id` (it encodes scope as a query param), which invalidates existing dev sessions — users must sign out and back in. Prod sessions only invalidate if you also change the metadata file's `client_id`.
 
 For unauthenticated appview reads (e.g. profiles in `profile.ts`), hit `https://public.api.bsky.app` directly rather than requesting an `rpc:` scope.
+
+### Deployment
+
+Production is **Cloudflare Pages** at `requested.fyi`. `.github/workflows/deploy.yml` runs on push to `main`: `npm ci` → `npm run check` → `npm run lint` → `npm run build` → `cloudflare/wrangler-action@v3` deploys `build/` to the Pages project named `requested`. Requires repo secrets `CLOUDFLARE_API_TOKEN` (Pages: Edit token) and `CLOUDFLARE_ACCOUNT_ID`.
+
+`static/_redirects` (`/* /index.html 200`) tells Cloudflare Pages to fall back to the SPA shell for unknown paths — required because every route is client-rendered.
 
 ### Markdown rendering
 

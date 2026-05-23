@@ -1,0 +1,12 @@
+{
+	"client_id": "https://requested.fyi/client-metadata.json",
+	"client_name": "Requested",
+	"client_uri": "https://requested.fyi",
+	"redirect_uris": ["https://requested.fyi/"],
+	"scope": "atproto repo:fyi.requested.document repo:fyi.requested.documentVersion repo:fyi.requested.comment repo:fyi.requested.threadResolution",
+	"grant_types": ["authorization_code", "refresh_token"],
+	"response_types": ["code"],
+	"application_type": "web",
+	"token_endpoint_auth_method": "none",
+	"dpop_bound_access_tokens": true
+}
