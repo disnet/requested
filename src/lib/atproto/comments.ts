@@ -1,6 +1,12 @@
 import type { Agent } from '@atproto/api';
 import { fetchRecord, getVersionByUri, parseAtUri, resolvePdsEndpoint } from './documents';
-import { COMMENT_NSID, type CommentRecord, type StrongRef } from './lexicons';
+import {
+	COMMENT_NSID,
+	THREAD_RESOLUTION_NSID,
+	type CommentRecord,
+	type StrongRef,
+	type ThreadResolutionRecord
+} from './lexicons';
 import { listBacklinks } from './constellation';
 
 export type LoadedComment = {
@@ -9,6 +15,14 @@ export type LoadedComment = {
 	rkey: string;
 	did: string;
 	value: CommentRecord;
+};
+
+export type LoadedResolution = {
+	uri: string;
+	cid: string;
+	rkey: string;
+	did: string;
+	value: ThreadResolutionRecord;
 };
 
 // ---------- writes ----------
@@ -161,6 +175,184 @@ export function resolveLineShift(
 
 	return { kind: 'lost', from: originalLine, text: oldText };
 }
+
+// ---------- threading ----------
+
+export type Thread = {
+	// The comment with no `parent` field that anchors this thread. If the actual
+	// root record can't be hydrated (cross-PDS lag, deletion), the earliest
+	// orphan in the chain stands in as the root so replies are never lost.
+	root: LoadedComment;
+	// All non-root descendants, regardless of parent depth. Sorted by createdAt
+	// ascending. Per the design brief, replies render flat under the root —
+	// `parent` is still authoritative in the record, but the view doesn't render
+	// nested indents.
+	replies: LoadedComment[];
+};
+
+// Folds a flat comment list into threads by walking each comment's `parent`
+// strongRef chain until it reaches a comment with no parent (a true root) or
+// an unresolvable parent (treat the current node as the root — orphan reply).
+// Comments are grouped under their resolved root and replies are sorted by
+// createdAt. The thread list itself is sorted by root createdAt.
+export function foldThreads(comments: LoadedComment[]): Thread[] {
+	const byCid = new Map<string, LoadedComment>();
+	for (const c of comments) byCid.set(c.cid, c);
+
+	function findRoot(c: LoadedComment): LoadedComment {
+		let cur = c;
+		const seen = new Set<string>();
+		while (cur.value.parent) {
+			if (seen.has(cur.cid)) break;
+			seen.add(cur.cid);
+			const parent = byCid.get(cur.value.parent.cid);
+			if (!parent) break;
+			cur = parent;
+		}
+		return cur;
+	}
+
+	const byRootUri = new Map<string, Thread>();
+	for (const c of comments) {
+		const root = findRoot(c);
+		let thread = byRootUri.get(root.uri);
+		if (!thread) {
+			thread = { root, replies: [] };
+			byRootUri.set(root.uri, thread);
+		}
+		if (c.uri !== root.uri) thread.replies.push(c);
+	}
+
+	for (const t of byRootUri.values()) {
+		t.replies.sort((a, b) => a.value.createdAt.localeCompare(b.value.createdAt));
+	}
+
+	return [...byRootUri.values()].sort((a, b) =>
+		a.root.value.createdAt.localeCompare(b.root.value.createdAt)
+	);
+}
+
+// ---------- thread resolution ----------
+
+export async function createResolution(
+	agent: Agent,
+	did: string,
+	thread: StrongRef,
+	documentUri: string
+): Promise<{ uri: string; cid: string }> {
+	const record: ThreadResolutionRecord = {
+		thread,
+		document: documentUri,
+		createdAt: new Date().toISOString()
+	};
+	const res = await agent.com.atproto.repo.createRecord({
+		repo: did,
+		collection: THREAD_RESOLUTION_NSID,
+		record
+	});
+	return { uri: res.data.uri, cid: res.data.cid };
+}
+
+export async function deleteResolution(agent: Agent, did: string, rkey: string): Promise<void> {
+	await agent.com.atproto.repo.deleteRecord({
+		repo: did,
+		collection: THREAD_RESOLUTION_NSID,
+		rkey
+	});
+}
+
+export async function listMyResolutionsOn(
+	agent: Agent,
+	did: string,
+	documentUri: string
+): Promise<LoadedResolution[]> {
+	const res = await agent.com.atproto.repo.listRecords({
+		repo: did,
+		collection: THREAD_RESOLUTION_NSID,
+		limit: 100
+	});
+	return res.data.records
+		.map((r) => ({
+			uri: r.uri,
+			cid: r.cid,
+			rkey: parseAtUri(r.uri).rkey,
+			did,
+			value: r.value as ThreadResolutionRecord
+		}))
+		.filter((r) => r.value.document === documentUri);
+}
+
+export async function listResolutionsViaConstellation(
+	documentUri: string,
+	options: { signal?: AbortSignal; maxRecords?: number } = {}
+): Promise<LoadedResolution[]> {
+	const backlinks = await listBacklinks(
+		documentUri,
+		{ collection: THREAD_RESOLUTION_NSID, path: 'document' },
+		{ signal: options.signal, maxRecords: options.maxRecords }
+	);
+	const settled = await Promise.allSettled(
+		backlinks.map(async (b): Promise<LoadedResolution> => {
+			const pds = await resolvePdsEndpoint(b.did);
+			const rec = await fetchRecord<ThreadResolutionRecord>(pds, b.did, b.collection, b.rkey);
+			return { uri: rec.uri, cid: rec.cid, rkey: b.rkey, did: b.did, value: rec.value };
+		})
+	);
+	return settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+}
+
+// Discover resolutions on a document across atproto, masking Constellation
+// indexing latency with the signed-in user's own listRecords output. Same
+// dedupe-by-uri pattern as listAllCommentsOn.
+export async function listAllResolutionsOn(
+	documentUri: string,
+	options: { agent?: Agent | null; myDid?: string | null; signal?: AbortSignal } = {}
+): Promise<LoadedResolution[]> {
+	const [remote, mine] = await Promise.all([
+		listResolutionsViaConstellation(documentUri, { signal: options.signal }),
+		options.agent && options.myDid
+			? listMyResolutionsOn(options.agent, options.myDid, documentUri).catch(() => [])
+			: Promise.resolve([] as LoadedResolution[])
+	]);
+	const byUri = new Map<string, LoadedResolution>();
+	for (const r of remote) byUri.set(r.uri, r);
+	for (const r of mine) byUri.set(r.uri, r);
+	return [...byUri.values()];
+}
+
+// Picks the resolution that authoritatively governs a thread's resolved state.
+// Anyone can write a record with `thread = <root>`; readers only honor records
+// authored by the thread's root commenter or by the document author. Among
+// authorized records (both principals could resolve independently), we pick
+// the most recent so the surface answers "who resolved this most recently" in
+// a stable way.
+export function authoritativeResolution(
+	resolutions: LoadedResolution[],
+	threadRoot: LoadedComment,
+	documentAuthorDid: string
+): LoadedResolution | null {
+	const authorized = resolutions
+		.filter((r) => r.value.thread.uri === threadRoot.uri)
+		.filter((r) => r.did === threadRoot.did || r.did === documentAuthorDid);
+	if (authorized.length === 0) return null;
+	authorized.sort((a, b) => b.value.createdAt.localeCompare(a.value.createdAt));
+	return authorized[0];
+}
+
+// The resolution record (if any) on the signed-in user's repo for this thread.
+// Used by the unresolve action — you can only delete your own records, so even
+// if a thread is "resolved" by someone else, the signed-in user can only
+// unresolve when their own DID is the one that wrote the record.
+export function myResolutionFor(
+	resolutions: LoadedResolution[],
+	threadRoot: LoadedComment,
+	myDid: string | null
+): LoadedResolution | null {
+	if (!myDid) return null;
+	return resolutions.find((r) => r.did === myDid && r.value.thread.uri === threadRoot.uri) ?? null;
+}
+
+// ---------- comment version state ----------
 
 export type CommentVersionState =
 	| { kind: 'current' }

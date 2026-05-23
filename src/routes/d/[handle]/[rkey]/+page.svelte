@@ -9,12 +9,21 @@
 		type LoadedDocument
 	} from '$lib/atproto/documents';
 	import {
+		authoritativeResolution,
 		createComment,
+		createResolution,
+		deleteResolution,
 		describeCommentVersionState,
+		foldThreads,
 		listAllCommentsOn,
+		listAllResolutionsOn,
+		myResolutionFor,
 		type CommentVersionState,
-		type LoadedComment
+		type LoadedComment,
+		type LoadedResolution,
+		type Thread
 	} from '$lib/atproto/comments';
+	import type { StrongRef } from '$lib/atproto/lexicons';
 	import { fetchProfile, type Profile } from '$lib/atproto/profile';
 	import { renderMarkdown, renderMarkdownBlocks } from '$lib/markdown';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
@@ -30,9 +39,25 @@
 	let commenterProfiles = $state<Map<string, Profile>>(new Map());
 	let commentsError = $state<string | null>(null);
 
-	// `composer` is null when closed. When open, `line` is the source-line
-	// being commented on, or null for a whole-document comment.
-	let composer = $state<{ line: number | null } | null>(null);
+	let resolutions = $state<LoadedResolution[]>([]);
+
+	// Root URIs whose resolved thread is currently expanded in-view. Resolved
+	// threads collapse to a one-line summary by default and toggle open here.
+	let expandedResolved = $state<Set<string>>(new Set());
+
+	let resolveBusy = $state<Set<string>>(new Set());
+	let resolveError = $state<Map<string, string>>(new Map());
+
+	// `composer` is null when closed. `line` is the source-line being commented
+	// on (or null for a whole-document comment). `parent` is set when replying
+	// to an existing comment, in which case the new comment record carries that
+	// strongRef as its `parent`. `replyToHandle` is purely for the composer
+	// header copy and may be a DID fallback.
+	let composer = $state<{
+		line: number | null;
+		parent: StrongRef | null;
+		replyToHandle: string | null;
+	} | null>(null);
 	let composerBody = $state('');
 	let composerPosting = $state(false);
 	let composerError = $state<string | null>(null);
@@ -66,6 +91,10 @@
 		commentStates = new Map();
 		commenterProfiles = new Map();
 		commentsError = null;
+		resolutions = [];
+		expandedResolved = new Set();
+		resolveBusy = new Set();
+		resolveError = new Map();
 		composer = null;
 		composerBody = '';
 		composerError = null;
@@ -105,11 +134,15 @@
 	) {
 		commentsError = null;
 		try {
-			const list = await listAllCommentsOn(doc.uri, { agent, myDid });
+			const [list, res] = await Promise.all([
+				listAllCommentsOn(doc.uri, { agent, myDid }),
+				listAllResolutionsOn(doc.uri, { agent, myDid })
+			]);
 			list.sort((a, b) => a.value.createdAt.localeCompare(b.value.createdAt));
 			comments = list;
+			resolutions = res;
 
-			const uniqueDids = [...new Set(list.map((c) => c.did))];
+			const uniqueDids = [...new Set([...list.map((c) => c.did), ...res.map((r) => r.did)])];
 			void Promise.all(
 				uniqueDids.map(async (did) => {
 					if (commenterProfiles.has(did)) return;
@@ -169,21 +202,64 @@
 	const updatedAt = $derived(loaded?.version?.value.createdAt ?? null);
 	const docCoords = $derived(loaded ? `${loaded.rkey}` : '');
 
-	const groupedComments = $derived.by(() => {
-		const docLevel: LoadedComment[] = [];
-		const byLine = new Map<number, LoadedComment[]>();
-		for (const c of comments) {
-			if (c.value.line == null) {
-				docLevel.push(c);
+	// Fold the flat comment list into threads (root + flat replies), then
+	// partition by anchor. The doc-level bucket holds threads whose root has no
+	// `line`; line groups are keyed by the root's line. Replies inherit the
+	// root's anchor at render time regardless of what `line` their record
+	// happens to carry — replies should never split off from their root.
+	const allThreads = $derived(foldThreads(comments));
+
+	const groupedThreads = $derived.by(() => {
+		const docLevel: Thread[] = [];
+		const byLine = new Map<number, Thread[]>();
+		for (const t of allThreads) {
+			const line = t.root.value.line;
+			if (line == null) {
+				docLevel.push(t);
 			} else {
-				const arr = byLine.get(c.value.line) ?? [];
-				arr.push(c);
-				byLine.set(c.value.line, arr);
+				const arr = byLine.get(line) ?? [];
+				arr.push(t);
+				byLine.set(line, arr);
 			}
 		}
 		const lineGroups = [...byLine.entries()].sort((a, b) => a[0] - b[0]);
 		return { docLevel, lineGroups };
 	});
+
+	// Authority-filtered resolution lookup, keyed by root comment URI. A thread
+	// is "resolved" iff a record with this thread strongRef was written by an
+	// authorized DID — the root commenter or the document author. Records by
+	// any other DID are silently ignored.
+	const documentAuthorDid = $derived(loaded?.did ?? null);
+	const resolutionByRoot = $derived.by(() => {
+		const out = new Map<string, LoadedResolution>();
+		if (!documentAuthorDid) return out;
+		for (const t of allThreads) {
+			const r = authoritativeResolution(resolutions, t.root, documentAuthorDid);
+			if (r) out.set(t.root.uri, r);
+		}
+		return out;
+	});
+
+	// Of the resolutions on this document, the one (if any) that the signed-in
+	// user personally wrote for each root — required for the unresolve action
+	// since you can only delete records from your own repo.
+	const myResolutionByRoot = $derived.by(() => {
+		const out = new Map<string, LoadedResolution>();
+		const myDid = auth.did;
+		if (!myDid) return out;
+		for (const t of allThreads) {
+			const mine = myResolutionFor(resolutions, t.root, myDid);
+			if (mine) out.set(t.root.uri, mine);
+		}
+		return out;
+	});
+
+	function canResolve(thread: Thread): boolean {
+		const myDid = auth.did;
+		if (!myDid) return false;
+		return myDid === thread.root.did || myDid === documentAuthorDid;
+	}
 
 	// Items rendered in the desktop rail, in vertical order. Each item is
 	// anchored to a body block (or pinned to the top, for the doc group).
@@ -191,27 +267,27 @@
 	// opens a fresh line that has no prior comments, a synthetic item is
 	// emitted so the composer has a card of its own.
 	type RailItem =
-		| { kind: 'doc'; key: string; line: null; comments: LoadedComment[] }
-		| { kind: 'line'; key: string; line: number; comments: LoadedComment[] };
+		| { kind: 'doc'; key: string; line: null; threads: Thread[] }
+		| { kind: 'line'; key: string; line: number; threads: Thread[] };
 
 	const railItems = $derived.by<RailItem[]>(() => {
 		const items: RailItem[] = [];
 
-		const hasDocComments = groupedComments.docLevel.length > 0;
+		const hasDocThreads = groupedThreads.docLevel.length > 0;
 		const docComposerOpen = composer?.line === null;
-		if (hasDocComments || docComposerOpen) {
+		if (hasDocThreads || docComposerOpen) {
 			items.push({
 				kind: 'doc',
 				key: 'doc',
 				line: null,
-				comments: groupedComments.docLevel
+				threads: groupedThreads.docLevel
 			});
 		}
 
 		const lineKeys = new Set<number>();
-		for (const [line, group] of groupedComments.lineGroups) {
+		for (const [line, group] of groupedThreads.lineGroups) {
 			lineKeys.add(line);
-			items.push({ kind: 'line', key: `L${line}`, line, comments: group });
+			items.push({ kind: 'line', key: `L${line}`, line, threads: group });
 		}
 		// Composer on a fresh line — synthesize an empty group so the rail
 		// has somewhere to host the composer.
@@ -220,7 +296,7 @@
 				kind: 'line',
 				key: `L${composer.line}`,
 				line: composer.line,
-				comments: []
+				threads: []
 			});
 		}
 		items.sort((a, b) => {
@@ -246,6 +322,9 @@
 		void renderedBlocks;
 		void composer;
 		void commentStates;
+		void resolutionByRoot;
+		void expandedResolved;
+		void resolveError;
 
 		let raf = 0;
 		let firstPass = true;
@@ -302,7 +381,7 @@
 	});
 
 	function openComposer(line: number | null) {
-		composer = { line };
+		composer = { line, parent: null, replyToHandle: null };
 		composerBody = '';
 		composerError = null;
 		// On mobile, expand the inline thread so the composer is visible.
@@ -316,10 +395,93 @@
 		// close), so no imperative focus call is needed here.
 	}
 
+	function openReply(target: LoadedComment) {
+		const profile = commenterProfiles.get(target.did);
+		composer = {
+			line: target.value.line ?? null,
+			parent: { uri: target.uri, cid: target.cid },
+			replyToHandle: profile?.handle ?? target.did
+		};
+		composerBody = '';
+		composerError = null;
+		if (!isRail && target.value.line != null) {
+			const next = new Set(expandedLines);
+			next.add(target.value.line);
+			expandedLines = next;
+		}
+	}
+
 	function closeComposer() {
 		composer = null;
 		composerBody = '';
 		composerError = null;
+	}
+
+	function toggleResolvedExpand(rootUri: string) {
+		const next = new Set(expandedResolved);
+		if (next.has(rootUri)) next.delete(rootUri);
+		else next.add(rootUri);
+		expandedResolved = next;
+	}
+
+	async function resolveThread(thread: Thread) {
+		const agent = auth.agent;
+		const myDid = auth.did;
+		const doc = loaded;
+		if (!agent || !myDid || !doc) return;
+		if (!canResolve(thread)) return;
+		const rootUri = thread.root.uri;
+		if (resolveBusy.has(rootUri)) return;
+		resolveBusy = new Set(resolveBusy).add(rootUri);
+		const nextErr = new Map(resolveError);
+		nextErr.delete(rootUri);
+		resolveError = nextErr;
+		try {
+			await createResolution(agent, myDid, { uri: thread.root.uri, cid: thread.root.cid }, doc.uri);
+			await loadComments(doc, agent, myDid);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			const m = new Map(resolveError);
+			m.set(rootUri, msg);
+			resolveError = m;
+		} finally {
+			const b = new Set(resolveBusy);
+			b.delete(rootUri);
+			resolveBusy = b;
+		}
+	}
+
+	async function unresolveThread(thread: Thread) {
+		const agent = auth.agent;
+		const myDid = auth.did;
+		const doc = loaded;
+		if (!agent || !myDid || !doc) return;
+		const mine = myResolutionByRoot.get(thread.root.uri);
+		if (!mine) return; // you can only delete your own record
+		const rootUri = thread.root.uri;
+		if (resolveBusy.has(rootUri)) return;
+		resolveBusy = new Set(resolveBusy).add(rootUri);
+		const nextErr = new Map(resolveError);
+		nextErr.delete(rootUri);
+		resolveError = nextErr;
+		try {
+			await deleteResolution(agent, myDid, mine.rkey);
+			// Collapse the "expanded resolved" state for this thread on success,
+			// so the next render shows the now-open thread normally.
+			const ex = new Set(expandedResolved);
+			ex.delete(rootUri);
+			expandedResolved = ex;
+			await loadComments(doc, agent, myDid);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			const m = new Map(resolveError);
+			m.set(rootUri, msg);
+			resolveError = m;
+		} finally {
+			const b = new Set(resolveBusy);
+			b.delete(rootUri);
+			resolveBusy = b;
+		}
 	}
 
 	function toggleLine(line: number) {
@@ -347,6 +509,9 @@
 		composerPosting = true;
 		composerError = null;
 		try {
+			const opts: { line?: number; parent?: StrongRef } = {};
+			if (current.line != null) opts.line = current.line;
+			if (current.parent) opts.parent = current.parent;
 			await createComment(
 				agent,
 				myDid,
@@ -355,7 +520,7 @@
 					version: { uri: doc.version.uri, cid: doc.version.cid }
 				},
 				composerBody.trim(),
-				current.line != null ? { line: current.line } : {}
+				opts
 			);
 			closeComposer();
 			await loadComments(doc, agent, myDid);
@@ -501,8 +666,12 @@
 
 			<div class="prose">
 				{#each renderedBlocks as block, i (i)}
-					{@const blockLineGroup = groupedComments.lineGroups.find(([l]) => l === block.line)}
-					{@const blockCommentCount = blockLineGroup ? blockLineGroup[1].length : 0}
+					{@const blockLineThreads =
+						groupedThreads.lineGroups.find(([l]) => l === block.line)?.[1] ?? []}
+					{@const blockCommentCount = blockLineThreads.reduce(
+						(acc, t) => acc + 1 + t.replies.length,
+						0
+					)}
 					{@const isActive = activeLine === block.line}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
@@ -545,17 +714,17 @@
 								</span>
 							</button>
 						{/if}
-						{#if !isRail && expandedLines.has(block.line) && blockLineGroup}
+						{#if !isRail && expandedLines.has(block.line) && blockLineThreads.length > 0}
 							<div class="inline-thread">
-								{@render lineHeader(block.line, blockLineGroup[1])}
-								{#each blockLineGroup[1] as c (c.uri)}
-									{@render commentCard(c)}
+								{@render lineHeader(block.line, blockLineThreads[0].root)}
+								{#each blockLineThreads as thread (thread.root.uri)}
+									{@render threadInline(thread)}
 								{/each}
-								{#if composer && composer.line === block.line}
+								{#if composer && composer.line === block.line && composer.parent == null}
 									{@render inlineComposer()}
 								{/if}
 							</div>
-						{:else if !isRail && composer && composer.line === block.line}
+						{:else if !isRail && composer && composer.line === block.line && composer.parent == null}
 							<div class="inline-thread">
 								{@render inlineComposer()}
 							</div>
@@ -609,10 +778,10 @@
 						onfocusout={() => setActiveLine(null)}
 					>
 						{@render railHeader(item)}
-						{#each item.comments as c (c.uri)}
-							{@render commentBody(c)}
+						{#each item.threads as thread (thread.root.uri)}
+							{@render threadRail(thread)}
 						{/each}
-						{#if composer && composer.line === (item.kind === 'doc' ? null : item.line)}
+						{#if composer && composer.line === (item.kind === 'doc' ? null : item.line) && composer.parent == null}
 							{@render inlineComposer()}
 						{/if}
 					</article>
@@ -626,8 +795,8 @@
 			<header class="doc-comments-head">
 				<h2>
 					<span class="section-num">§</span> On the whole document
-					{#if groupedComments.docLevel.length > 0}
-						<span class="rail-count">{groupedComments.docLevel.length}</span>
+					{#if groupedThreads.docLevel.length > 0}
+						<span class="rail-count">{groupedThreads.docLevel.length}</span>
 					{/if}
 				</h2>
 				{#if auth.status === 'signed-in'}
@@ -645,15 +814,15 @@
 				<p class="error">{commentsError}</p>
 			{/if}
 
-			{#if composer && composer.line === null}
+			{#if composer && composer.line === null && composer.parent == null}
 				{@render inlineComposer()}
 			{/if}
 
-			{#if groupedComments.docLevel.length === 0 && composer?.line !== null && !commentsError}
+			{#if groupedThreads.docLevel.length === 0 && composer?.line !== null && !commentsError}
 				<p class="muted doc-comments-empty">No document-level comments yet.</p>
 			{:else}
-				{#each groupedComments.docLevel as c (c.uri)}
-					{@render commentCard(c)}
+				{#each groupedThreads.docLevel as thread (thread.root.uri)}
+					{@render threadInline(thread)}
 				{/each}
 			{/if}
 		</section>
@@ -663,7 +832,9 @@
 {#snippet inlineComposer()}
 	<form class="composer composer-inline" onsubmit={submitComment}>
 		<header class="composer-header">
-			{#if composer?.line != null}
+			{#if composer?.parent}
+				<span class="muted">Replying to @{composer.replyToHandle ?? '…'}</span>
+			{:else if composer?.line != null}
 				<span class="muted">Commenting on this line</span>
 			{:else}
 				<span class="anchor-tag">doc</span>
@@ -676,7 +847,11 @@
 		{/if}
 		<div class="composer-actions">
 			<button type="submit" class="bracket-btn bracket-btn-primary" disabled={composerPosting}>
-				{composerPosting ? '[ posting… ]' : '[ post comment ]'}
+				{composerPosting
+					? '[ posting… ]'
+					: composer?.parent
+						? '[ post reply ]'
+						: '[ post comment ]'}
 			</button>
 			<button type="button" class="bracket-btn" onclick={closeComposer} disabled={composerPosting}>
 				[ cancel ]
@@ -685,8 +860,8 @@
 	</form>
 {/snippet}
 
-{#snippet lineHeader(line: number, group: LoadedComment[])}
-	{@const state = commentStates.get(group[0].uri)}
+{#snippet lineHeader(line: number, refComment: LoadedComment)}
+	{@const state = commentStates.get(refComment.uri)}
 	{@const shift = state?.kind === 'line-stale' ? state.shift : null}
 	<h3 class="comment-anchor">
 		{#if shift?.kind === 'shifted'}
@@ -708,10 +883,129 @@
 	</h3>
 {/snippet}
 
-{#snippet commentCard(c: LoadedComment)}
+{#snippet threadInline(thread: Thread)}
+	{@const resolution = resolutionByRoot.get(thread.root.uri)}
+	{@const mineRes = myResolutionByRoot.get(thread.root.uri)}
+	{@const isResolved = !!resolution}
+	{@const expanded = expandedResolved.has(thread.root.uri)}
+	{@const replyCount = thread.replies.length}
+	{@const resolverProfile = resolution ? commenterProfiles.get(resolution.did) : null}
+	{@const busy = resolveBusy.has(thread.root.uri)}
+	{@const err = resolveError.get(thread.root.uri)}
+	<div class="thread" class:thread-resolved={isResolved} class:thread-expanded={expanded}>
+		{#if isResolved && !expanded}
+			<div class="resolved-summary">
+				<span class="resolved-mark" aria-hidden="true">✓</span>
+				<span class="resolved-text">
+					Resolved by <strong>@{resolverProfile?.handle ?? resolution.did}</strong>
+					{#if replyCount > 0}
+						<span class="resolved-sep">·</span>
+						{replyCount}
+						{replyCount === 1 ? 'reply' : 'replies'}
+					{/if}
+				</span>
+				<div class="resolved-actions">
+					<button
+						type="button"
+						class="bracket-btn bracket-btn-sm"
+						onclick={() => toggleResolvedExpand(thread.root.uri)}
+					>
+						[ show ]
+					</button>
+					{#if mineRes}
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							disabled={busy}
+							onclick={() => unresolveThread(thread)}
+						>
+							{busy ? '[ …  ]' : '[ unresolve ]'}
+						</button>
+					{/if}
+				</div>
+				{#if err}
+					<p class="error resolved-error">{err}</p>
+				{/if}
+			</div>
+		{:else}
+			{#if isResolved}
+				<div class="resolved-banner">
+					<span class="resolved-mark" aria-hidden="true">✓</span>
+					<span class="resolved-text">
+						Resolved by <strong>@{resolverProfile?.handle ?? resolution.did}</strong>
+					</span>
+					<div class="resolved-actions">
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							onclick={() => toggleResolvedExpand(thread.root.uri)}
+						>
+							[ hide ]
+						</button>
+						{#if mineRes}
+							<button
+								type="button"
+								class="bracket-btn bracket-btn-sm"
+								disabled={busy}
+								onclick={() => unresolveThread(thread)}
+							>
+								{busy ? '[ …  ]' : '[ unresolve ]'}
+							</button>
+						{/if}
+					</div>
+				</div>
+			{/if}
+			{@render commentCard(thread.root, true, isResolved)}
+			{#if !isResolved}
+				<div class="comment-actions">
+					{#if auth.status === 'signed-in'}
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							onclick={() => openReply(thread.root)}
+						>
+							[ reply ]
+						</button>
+					{/if}
+					{#if canResolve(thread)}
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							disabled={busy}
+							onclick={() => resolveThread(thread)}
+						>
+							{busy ? '[ …  ]' : '[ resolve ]'}
+						</button>
+					{/if}
+					{#if err}
+						<span class="error inline-error">{err}</span>
+					{/if}
+				</div>
+			{/if}
+			{#if composer && composer.parent?.uri === thread.root.uri}
+				{@render inlineComposer()}
+			{/if}
+			{#each thread.replies as r (r.uri)}
+				{@render commentCard(r, false, isResolved)}
+				{#if !isResolved && auth.status === 'signed-in'}
+					<div class="comment-actions reply-actions">
+						<button type="button" class="bracket-btn bracket-btn-sm" onclick={() => openReply(r)}>
+							[ reply ]
+						</button>
+					</div>
+				{/if}
+				{#if composer && composer.parent?.uri === r.uri}
+					{@render inlineComposer()}
+				{/if}
+			{/each}
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet commentCard(c: LoadedComment, isRoot: boolean, threadResolved: boolean)}
 	{@const state = commentStates.get(c.uri)}
 	{@const profile = commenterProfiles.get(c.did)}
-	<article class="comment">
+	<article class="comment" class:comment-reply={!isRoot} class:comment-dim={threadResolved}>
 		<div class="comment-meta">
 			<span class="commenter">
 				{#if profile?.avatar}
@@ -734,7 +1028,7 @@
 {/snippet}
 
 {#snippet railHeader(item: RailItem)}
-	{@const firstUri = item.comments[0]?.uri}
+	{@const firstUri = item.threads[0]?.root.uri}
 	{@const state = firstUri ? commentStates.get(firstUri) : undefined}
 	{@const shift = state?.kind === 'line-stale' ? state.shift : null}
 	<header class="rail-card-head">
@@ -760,10 +1054,129 @@
 	</header>
 {/snippet}
 
-{#snippet commentBody(c: LoadedComment)}
+{#snippet threadRail(thread: Thread)}
+	{@const resolution = resolutionByRoot.get(thread.root.uri)}
+	{@const mineRes = myResolutionByRoot.get(thread.root.uri)}
+	{@const isResolved = !!resolution}
+	{@const expanded = expandedResolved.has(thread.root.uri)}
+	{@const replyCount = thread.replies.length}
+	{@const resolverProfile = resolution ? commenterProfiles.get(resolution.did) : null}
+	{@const busy = resolveBusy.has(thread.root.uri)}
+	{@const err = resolveError.get(thread.root.uri)}
+	<div class="rail-thread" class:thread-resolved={isResolved} class:thread-expanded={expanded}>
+		{#if isResolved && !expanded}
+			<div class="resolved-summary">
+				<span class="resolved-mark" aria-hidden="true">✓</span>
+				<span class="resolved-text">
+					Resolved by <strong>@{resolverProfile?.handle ?? resolution.did}</strong>
+					{#if replyCount > 0}
+						<span class="resolved-sep">·</span>
+						{replyCount}
+						{replyCount === 1 ? 'reply' : 'replies'}
+					{/if}
+				</span>
+				<div class="resolved-actions">
+					<button
+						type="button"
+						class="bracket-btn bracket-btn-sm"
+						onclick={() => toggleResolvedExpand(thread.root.uri)}
+					>
+						[ show ]
+					</button>
+					{#if mineRes}
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							disabled={busy}
+							onclick={() => unresolveThread(thread)}
+						>
+							{busy ? '[ …  ]' : '[ unresolve ]'}
+						</button>
+					{/if}
+				</div>
+				{#if err}
+					<p class="error resolved-error">{err}</p>
+				{/if}
+			</div>
+		{:else}
+			{#if isResolved}
+				<div class="resolved-banner">
+					<span class="resolved-mark" aria-hidden="true">✓</span>
+					<span class="resolved-text">
+						Resolved by <strong>@{resolverProfile?.handle ?? resolution.did}</strong>
+					</span>
+					<div class="resolved-actions">
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							onclick={() => toggleResolvedExpand(thread.root.uri)}
+						>
+							[ hide ]
+						</button>
+						{#if mineRes}
+							<button
+								type="button"
+								class="bracket-btn bracket-btn-sm"
+								disabled={busy}
+								onclick={() => unresolveThread(thread)}
+							>
+								{busy ? '[ …  ]' : '[ unresolve ]'}
+							</button>
+						{/if}
+					</div>
+				</div>
+			{/if}
+			{@render commentBody(thread.root, true, isResolved)}
+			{#if !isResolved}
+				<div class="comment-actions rail-actions">
+					{#if auth.status === 'signed-in'}
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							onclick={() => openReply(thread.root)}
+						>
+							[ reply ]
+						</button>
+					{/if}
+					{#if canResolve(thread)}
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							disabled={busy}
+							onclick={() => resolveThread(thread)}
+						>
+							{busy ? '[ …  ]' : '[ resolve ]'}
+						</button>
+					{/if}
+					{#if err}
+						<span class="error inline-error">{err}</span>
+					{/if}
+				</div>
+			{/if}
+			{#if composer && composer.parent?.uri === thread.root.uri}
+				{@render inlineComposer()}
+			{/if}
+			{#each thread.replies as r (r.uri)}
+				{@render commentBody(r, false, isResolved)}
+				{#if !isResolved && auth.status === 'signed-in'}
+					<div class="comment-actions rail-actions reply-actions">
+						<button type="button" class="bracket-btn bracket-btn-sm" onclick={() => openReply(r)}>
+							[ reply ]
+						</button>
+					</div>
+				{/if}
+				{#if composer && composer.parent?.uri === r.uri}
+					{@render inlineComposer()}
+				{/if}
+			{/each}
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet commentBody(c: LoadedComment, isRoot: boolean, threadResolved: boolean)}
 	{@const state = commentStates.get(c.uri)}
 	{@const profile = commenterProfiles.get(c.did)}
-	<div class="rail-comment">
+	<div class="rail-comment" class:rail-comment-reply={!isRoot} class:comment-dim={threadResolved}>
 		<div class="rail-comment-meta">
 			<span class="commenter">
 				{#if profile?.avatar}
@@ -1556,5 +1969,129 @@
 			margin-right: var(--space-2);
 			opacity: 0.5;
 		}
+	}
+
+	/* --- Threads (root + flat replies) ---
+	   A thread is a sub-block inside a rail-card or inline-thread. Multiple
+	   threads can stack within the same card (multiple roots on the same line).
+	   The hairline rule between threads is a sibling-margin trick so the first
+	   thread sits flush with the card header. */
+	.thread + .thread,
+	.rail-thread + .rail-thread {
+		margin-top: var(--space-4);
+		padding-top: var(--space-4);
+		border-top: var(--border-thin) solid var(--rule);
+	}
+
+	/* Indent replies one step so the threading is legible without trapping the
+	   eye into a deep tree. Only one level — see the design brief. */
+	.comment-reply {
+		margin-left: var(--space-4);
+	}
+	.rail-comment-reply {
+		margin-left: var(--space-3);
+		padding-left: var(--space-3);
+		border-left: 1px solid var(--rule);
+	}
+
+	/* Reply / resolve action row. Lives between a comment and the next sibling
+	   (next reply, composer, or end-of-thread). Uses the same bracketed button
+	   vocabulary as the rest of the app. */
+	.comment-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		align-items: center;
+		margin: var(--space-1) 0 var(--space-3);
+	}
+	.rail-actions {
+		margin: 2px 0 var(--space-3);
+	}
+	.reply-actions {
+		margin-left: var(--space-4);
+	}
+	.rail-actions.reply-actions {
+		margin-left: var(--space-3);
+	}
+	:global(.bracket-btn.bracket-btn-sm) {
+		font-size: var(--text-xs);
+		padding: 2px var(--space-2);
+	}
+	.inline-error {
+		font-size: var(--text-xs);
+	}
+
+	/* Resolved thread treatment. Collapsed by default to a one-line summary
+	   so a doc with twenty resolved discussions still scans cleanly. Expanding
+	   reveals the conversation under a subtle banner with [hide] / [unresolve]
+	   actions; the comments themselves dim one step but stay legible. */
+	.resolved-summary {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2) var(--space-3);
+		padding: var(--space-2) 0;
+		font-size: var(--text-xs);
+		color: var(--ink-2);
+	}
+	.rail-thread .resolved-summary {
+		font-size: var(--text-2xs);
+		gap: var(--space-1) var(--space-2);
+	}
+	.resolved-banner {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2) var(--space-3);
+		padding: var(--space-2) 0;
+		margin-bottom: var(--space-2);
+		font-size: var(--text-xs);
+		color: var(--ink-2);
+		border-bottom: var(--border-thin) solid var(--rule);
+	}
+	.rail-thread .resolved-banner {
+		font-size: var(--text-2xs);
+		gap: var(--space-1) var(--space-2);
+	}
+	.resolved-mark {
+		color: var(--accent);
+		font-weight: 700;
+	}
+	.resolved-text {
+		flex: 1 1 auto;
+		min-width: 0;
+		line-height: var(--leading-snug);
+	}
+	.resolved-text strong {
+		font-weight: 600;
+		color: var(--ink);
+	}
+	.resolved-sep {
+		color: var(--ink-4);
+		margin: 0 0.1ch;
+	}
+	.resolved-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		flex-shrink: 0;
+	}
+	.resolved-error {
+		flex: 1 1 100%;
+		font-size: var(--text-xs);
+		margin: 0;
+	}
+	.comment-dim {
+		opacity: 0.6;
+	}
+	.comment-dim:hover,
+	.thread-expanded:hover .comment-dim {
+		opacity: 1;
+	}
+
+	/* In the rail card, a thread that's currently collapsed-resolved doesn't
+	   need its own padding; the summary line carries the whole card. */
+	.rail-thread.thread-resolved:not(.thread-expanded) {
+		padding-top: 0;
 	}
 </style>

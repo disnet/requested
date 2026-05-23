@@ -2,7 +2,12 @@ import {
 	BrowserOAuthClient,
 	buildAtprotoLoopbackClientMetadata
 } from '@atproto/oauth-client-browser';
-import { COMMENT_NSID, DOCUMENT_NSID, DOCUMENT_VERSION_NSID } from './lexicons';
+import {
+	COMMENT_NSID,
+	DOCUMENT_NSID,
+	DOCUMENT_VERSION_NSID,
+	THREAD_RESOLUTION_NSID
+} from './lexicons';
 
 // Granular atproto OAuth scopes per the Permissions spec:
 //   - `atproto` is always required (base identity scope)
@@ -14,7 +19,8 @@ const SCOPES = [
 	'atproto',
 	`repo:${DOCUMENT_NSID}`,
 	`repo:${DOCUMENT_VERSION_NSID}`,
-	`repo:${COMMENT_NSID}`
+	`repo:${COMMENT_NSID}`,
+	`repo:${THREAD_RESOLUTION_NSID}`
 ].join(' ');
 
 let client: BrowserOAuthClient | undefined;

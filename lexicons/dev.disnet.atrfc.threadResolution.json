@@ -1,0 +1,32 @@
+{
+	"lexicon": 1,
+	"id": "dev.disnet.atrfc.threadResolution",
+	"defs": {
+		"main": {
+			"type": "record",
+			"description": "Marks a comment thread as resolved. Lives on the resolver's PDS, not the root commenter's or document author's — either of those two principals may write one. Presence of a record by an authorized DID means the thread is resolved; deletion reverts. Unauthorized resolution records (any DID other than the root commenter or the document author) are ignored by readers.",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["thread", "document", "createdAt"],
+				"properties": {
+					"thread": {
+						"type": "ref",
+						"ref": "com.atproto.repo.strongRef",
+						"description": "Strong ref to the root dev.disnet.atrfc.comment of the thread being resolved. The 'root' is the comment in the thread with no `parent` field."
+					},
+					"document": {
+						"type": "string",
+						"format": "at-uri",
+						"description": "AT-URI of the dev.disnet.atrfc.document the thread belongs to. Stored alongside the thread ref so readers can list resolutions by document without first hydrating every comment."
+					},
+					"createdAt": {
+						"type": "string",
+						"format": "datetime",
+						"description": "When the thread was marked resolved."
+					}
+				}
+			}
+		}
+	}
+}

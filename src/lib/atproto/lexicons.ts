@@ -4,6 +4,7 @@
 export const DOCUMENT_NSID = 'dev.disnet.atrfc.document';
 export const DOCUMENT_VERSION_NSID = 'dev.disnet.atrfc.documentVersion';
 export const COMMENT_NSID = 'dev.disnet.atrfc.comment';
+export const THREAD_RESOLUTION_NSID = 'dev.disnet.atrfc.threadResolution';
 
 export type StrongRef = {
 	uri: string;
@@ -32,5 +33,12 @@ export type CommentRecord = {
 	line?: number;
 	body: string;
 	parent?: StrongRef;
+	createdAt: string;
+};
+
+export type ThreadResolutionRecord = {
+	$type?: typeof THREAD_RESOLUTION_NSID;
+	thread: StrongRef;
+	document: string;
 	createdAt: string;
 };
