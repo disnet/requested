@@ -44,6 +44,12 @@ export type RenderedBlock = {
 	 *  isn't a duplicate of its first item's), and to aggregate comment counts
 	 *  across the block. */
 	subLines: number[];
+	/** Discriminant for the kind of top-level block. `'simple'` covers
+	 *  paragraphs, headings, blockquotes, hr, etc. — anything with no sub-
+	 *  anchors. The reader uses this to special-case lists (sub-anchors are
+	 *  `<li>` elements that can host block-level descendants — see the mobile
+	 *  inline-thread portal). */
+	kind: 'simple' | 'list' | 'table' | 'code';
 };
 
 function slugify(text: string): string {
@@ -128,18 +134,23 @@ export function renderMarkdownBlocks(src: string, opts: RenderOptions = {}): Ren
 
 		let html = rawHtml;
 		let subLines: number[] = [];
+		let kind: RenderedBlock['kind'] = 'simple';
 		if (token.type === 'list') {
 			({ html, subLines } = annotateList(token as Tokens.List, html, startLine));
+			kind = 'list';
 		} else if (token.type === 'table') {
 			({ html, subLines } = annotateTable(token as Tokens.Table, html, startLine));
+			kind = 'table';
 		} else if (token.type === 'code') {
 			({ html, subLines } = annotateCode(token as Tokens.Code, html, startLine));
+			kind = 'code';
 		}
 
 		blocks.push({
 			line: startLine,
 			html: sanitize(html),
-			subLines
+			subLines,
+			kind
 		});
 	}
 

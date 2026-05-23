@@ -509,6 +509,38 @@
 		};
 	});
 
+	// Mobile inline-thread portal. List blocks render per-sub-line inline-thread
+	// elements (see the `block.kind === 'list'` branch in the markup) marked with
+	// `data-portal-line`. This effect walks each one and re-parents it inside
+	// the matching `li.md-sub[data-md-line="N"]` so the composer / thread sits
+	// directly under the list item the user actually clicked, instead of
+	// stranded at the bottom of a potentially-very-long list. Idempotent: skips
+	// elements already inside their target. Only fires on mobile — the rail
+	// handles spatial proximity via absolute positioning on desktop.
+	$effect(() => {
+		if (isRail) return;
+		const article = articleEl;
+		if (!article) return;
+		// Track everything that can change the set of portal'd inline-threads.
+		void composer;
+		void expandedLines.size;
+		void comments;
+		void renderedBlocks;
+		const portals = article.querySelectorAll<HTMLElement>('.inline-thread[data-portal-line]');
+		for (const portal of portals) {
+			const lineStr = portal.dataset.portalLine;
+			if (!lineStr) continue;
+			// Sub-anchors for tables (<tr>) and code lines (<span>) can't host
+			// block-level descendants cleanly, so the selector is `<li>`-only —
+			// the inline-thread is then left at its rendered position for any
+			// non-list composite that ever picks up `data-portal-line` later.
+			const target = article.querySelector<HTMLElement>(`li.md-sub[data-md-line="${lineStr}"]`);
+			if (!target) continue;
+			if (portal.parentElement === target) continue;
+			target.appendChild(portal);
+		}
+	});
+
 	// Toggle .is-active on sub-anchors based on activeLine. .md-block uses
 	// Svelte's `class:is-active`, but .md-sub elements live inside {@html}
 	// and need imperative class management.
@@ -960,7 +992,33 @@
 								</span>
 							</button>
 						{/if}
-						{#if !isRail && expandedLines.has(block.line) && blockLineGroups.length > 0}
+						{#if !isRail && block.kind === 'list'}
+							<!-- List blocks render one inline-thread per affected sub-line so that
+							     the portal effect (see articleEl effect block) can move each one
+							     inside its matching `<li class="md-sub" data-md-line="N">`. Until
+							     the effect runs (or for sub-lines whose `<li>` isn't found), the
+							     thread stays here at the end of the block — same as it was before
+							     the portal was added. -->
+							{#each block.subLines as subLine (subLine)}
+								{@const subThreads = blockLineGroups.find(([l]) => l === subLine)?.[1] ?? []}
+								{@const showComposer =
+									composer != null && composer.line === subLine && composer.parent == null}
+								{@const showThreads = expandedLines.has(block.line) && subThreads.length > 0}
+								{#if showThreads || showComposer}
+									<div class="inline-thread" data-portal-line={subLine}>
+										{#if showThreads}
+											{@render lineHeader(subLine, subThreads[0].root)}
+											{#each subThreads as thread (thread.root.uri)}
+												{@render threadInline(thread)}
+											{/each}
+										{/if}
+										{#if showComposer}
+											{@render inlineComposer()}
+										{/if}
+									</div>
+								{/if}
+							{/each}
+						{:else if !isRail && expandedLines.has(block.line) && blockLineGroups.length > 0}
 							<div class="inline-thread">
 								{#each blockLineGroups as [groupLine, threads] (groupLine)}
 									{@render lineHeader(groupLine, threads[0].root)}
