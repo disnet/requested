@@ -2,35 +2,12 @@
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import type { ResolvedPathname } from '$app/types';
-	import {
-		getDocument,
-		listVersionChain,
-		type LoadedDocument,
-		type LoadedVersion
-	} from '$lib/atproto/documents';
 
-	let loaded = $state<LoadedDocument | null>(null);
-	let versions = $state<LoadedVersion[]>([]);
-	let error = $state<string | null>(null);
+	const { data } = $props();
 
-	$effect(() => {
-		const { did, rkey } = page.params as { did: string; rkey: string };
-		loaded = null;
-		versions = [];
-		error = null;
-		void (async () => {
-			try {
-				const [doc, chain] = await Promise.all([
-					getDocument(did, rkey),
-					listVersionChain(did, rkey)
-				]);
-				loaded = doc;
-				versions = chain;
-			} catch (err) {
-				error = err instanceof Error ? err.message : String(err);
-			}
-		})();
-	});
+	const loaded = $derived(data.doc);
+	const versions = $derived(data.versions);
+	const error = $derived(data.loadError);
 
 	const did = $derived(page.params.did as string);
 	const rkey = $derived(page.params.rkey as string);

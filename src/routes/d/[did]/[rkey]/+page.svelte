@@ -1,12 +1,13 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import type { Agent } from '@atproto/api';
 	import { auth } from '$lib/atproto/auth.svelte';
-	import { getDocument, listVersionChain, type LoadedDocument } from '$lib/atproto/documents';
+	import { listVersionChain } from '$lib/atproto/documents';
+	import type { LoadedDocument } from '$lib/atproto/documents';
 	import {
 		authoritativeResolution,
 		createComment,
@@ -27,10 +28,19 @@
 	import { renderMarkdown, renderMarkdownBlocks } from '$lib/markdown';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
-	let loaded = $state<LoadedDocument | null>(null);
-	let author = $state<Profile | null>(null);
-	let error = $state<string | null>(null);
+	const { data } = $props();
 
+	// Document, version, and author profile come pre-loaded from +page.ts — the
+	// Worker fetches them server-side in SSR builds, and SvelteKit's universal
+	// load runs them in the browser in SPA builds. `loaded` and `author` stay
+	// as $derived so that client-side navigation between documents picks up the
+	// new data without us having to refetch here.
+	const loaded = $derived<LoadedDocument | null>(data.doc);
+	const author = $derived<Profile | null>(data.profile);
+	const error = $derived<string | null>(data.loadError);
+
+	// Version chain is informational (just used for the "1 of N" hint), so we
+	// keep it client-side and let it land lazily after first paint.
 	let versionCount = $state<number | null>(null);
 
 	let comments = $state<LoadedComment[]>([]);
@@ -94,43 +104,35 @@
 	let articleEl = $state<HTMLElement | undefined>(undefined);
 	let railEl = $state<HTMLElement | undefined>(undefined);
 
+	// When navigating between documents client-side, reset the per-document UI
+	// state and kick off the secondary fetches that don't block first paint.
+	// `data.doc?.uri` changes drive this — `untrack` keeps the reactive state
+	// writes from re-triggering the effect.
 	$effect(() => {
-		const { did, rkey } = page.params as { did: string; rkey: string };
-		loaded = null;
-		author = null;
-		error = null;
-		versionCount = null;
-		comments = [];
-		commentStates.clear();
-		commenterProfiles.clear();
-		commentsError = null;
-		resolutions = [];
-		expandedResolved.clear();
-		resolveBusy.clear();
-		resolveError.clear();
-		composer = null;
-		composerBody = '';
-		composerError = null;
-		expandedLines.clear();
-		activeLine = null;
-		linkedLine = null;
-		didInitialHashScroll = false;
-		void (async () => {
-			try {
-				const [doc, profile] = await Promise.all([
-					getDocument(did, rkey),
-					fetchProfile(did).catch(() => null)
-				]);
-				loaded = doc;
-				author = profile;
-				// Fire-and-forget — version count is informational, not load-blocking.
-				void listVersionChain(did, rkey)
-					.then((chain) => (versionCount = chain.length))
-					.catch(() => (versionCount = null));
-			} catch (err) {
-				error = err instanceof Error ? err.message : String(err);
-			}
-		})();
+		const docUri = data.doc?.uri ?? null;
+		untrack(() => {
+			versionCount = null;
+			comments = [];
+			commentStates.clear();
+			commenterProfiles.clear();
+			commentsError = null;
+			resolutions = [];
+			expandedResolved.clear();
+			resolveBusy.clear();
+			resolveError.clear();
+			composer = null;
+			composerBody = '';
+			composerError = null;
+			expandedLines.clear();
+			activeLine = null;
+			linkedLine = null;
+			didInitialHashScroll = false;
+		});
+		if (!docUri || !data.doc) return;
+		const { did, rkey } = data.doc;
+		void listVersionChain(did, rkey)
+			.then((chain) => (versionCount = chain.length))
+			.catch(() => (versionCount = null));
 	});
 
 	$effect(() => {

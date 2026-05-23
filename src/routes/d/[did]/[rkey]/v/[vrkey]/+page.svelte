@@ -2,55 +2,16 @@
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import type { ResolvedPathname } from '$app/types';
-	import {
-		getDocument,
-		getVersion,
-		listVersionChain,
-		parseAtUri,
-		type LoadedDocument,
-		type LoadedVersion
-	} from '$lib/atproto/documents';
-	import { fetchProfile, type Profile } from '$lib/atproto/profile';
+	import { parseAtUri } from '$lib/atproto/documents';
 	import { renderMarkdown } from '$lib/markdown';
 
-	let loaded = $state<LoadedDocument | null>(null);
-	let version = $state<LoadedVersion | null>(null);
-	let author = $state<Profile | null>(null);
-	let error = $state<string | null>(null);
-	let versionIndex = $state<{ n: number; total: number } | null>(null);
+	const { data } = $props();
 
-	$effect(() => {
-		const { did, rkey, vrkey } = page.params as {
-			did: string;
-			rkey: string;
-			vrkey: string;
-		};
-		loaded = null;
-		version = null;
-		author = null;
-		error = null;
-		versionIndex = null;
-		void (async () => {
-			try {
-				const [doc, v, profile] = await Promise.all([
-					getDocument(did, rkey),
-					getVersion(did, vrkey),
-					fetchProfile(did).catch(() => null)
-				]);
-				loaded = doc;
-				version = v;
-				author = profile;
-				void listVersionChain(did, rkey).then((chain) => {
-					const idx = chain.findIndex((cv) => cv.rkey === vrkey);
-					if (idx >= 0) {
-						versionIndex = { n: chain.length - idx, total: chain.length };
-					}
-				});
-			} catch (err) {
-				error = err instanceof Error ? err.message : String(err);
-			}
-		})();
-	});
+	const loaded = $derived(data.doc);
+	const version = $derived(data.version);
+	const author = $derived(data.profile);
+	const versionIndex = $derived(data.versionIndex);
+	const error = $derived(data.loadError);
 
 	const did = $derived(page.params.did as string);
 	const rkey = $derived(page.params.rkey as string);

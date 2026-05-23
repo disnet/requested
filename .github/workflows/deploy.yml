@@ -32,12 +32,15 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Build
-        run: npm run build
+      - name: Build (SSR / Cloudflare Worker)
+        # Production ships the SSR build so public read routes server-render
+        # on the Worker. The pure-SPA build (`npm run build`) is kept for
+        # forks / static-host deploys but is not exercised in CI.
+        run: npm run build:ssr
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy build --project-name=requested --branch=main
+          command: pages deploy .svelte-kit/cloudflare --project-name=requested --branch=main

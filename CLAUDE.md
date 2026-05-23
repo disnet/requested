@@ -4,22 +4,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-- `npm run dev` — Vite dev server. Bound to **`127.0.0.1:5173` with `strictPort`** (see `vite.config.ts`); the atproto OAuth loopback client requires the literal `127.0.0.1`, not `localhost`. Don't change the host.
-- `npm run build` — production build via `@sveltejs/adapter-static` into `build/` (SPA, `fallback: 'index.html'`).
+- `npm run dev` — Vite dev server (SPA mode). Bound to **`127.0.0.1:5173` with `strictPort`** (see `vite.config.ts`); the atproto OAuth loopback client requires the literal `127.0.0.1`, not `localhost`. Don't change the host.
+- `npm run dev:ssr` — Vite dev with SSR enabled (Node-simulated, not Workers). Fast HMR; useful for iterating on SSR logic. Won't catch Workers-API quirks.
+- `npm run build` — SPA build (adapter-static into `build/`). The default for forks and static-host deploys.
+- `npm run build:ssr` — Worker build (adapter-cloudflare into `.svelte-kit/cloudflare/`). What CI ships.
 - `npm run preview` — serve the built SPA.
+- `npm run preview:ssr` — `build:ssr` + `wrangler pages dev`. Production-faithful (real workerd runtime, `nodejs_compat` enabled) but no HMR. Use this to verify SSR before pushing.
 - `npm run check` — `svelte-kit sync && svelte-check` (typecheck + Svelte diagnostics). There is no test runner configured.
 - `npm run lint` — `prettier --check . && eslint .`
 - `npm run format` — `prettier --write .`
 
 ## Architecture
 
-Requested is a **pure browser SvelteKit app** for publishing markdown RFCs and threaded line-comments to atproto. There is no server runtime and no central database — every persistent record lives on the relevant user's own PDS.
+Requested is a SvelteKit app for publishing markdown RFCs and threaded line-comments to atproto. There is no central database — every persistent record lives on the relevant user's own PDS. The app has **two build modes** (see below), but in both cases data is fetched from PDSes on demand; we never persist to a backend of our own.
 
-### Static SPA / no SSR
+### Dual build modes
 
-`src/routes/+layout.ts` sets `ssr = false` and `prerender = false` globally. Every route is rendered client-side off the SPA shell (`build/index.html`). Don't introduce `+page.server.ts` / `+layout.server.ts` files or anything that assumes a Node runtime — there is no server.
+A single build-mode env var (`PUBLIC_BUILD_MODE`) toggles between two output shapes:
 
-Svelte 5 **runes mode is forced** for all project files (`svelte.config.js`). Use `$state`, `$derived`, `$effect`, `$props`, etc.; don't fall back to legacy `let`-as-reactive or `$:` syntax. Stateful stores are written as classes with rune-typed fields in `*.svelte.ts` files (see `src/lib/atproto/auth.svelte.ts` — exported as the singleton `auth`).
+- **`spa` (default)** — `adapter-static`, no server runtime, output in `build/`. Identical to the pre-SSR design. Deploys anywhere that serves static files (S3, GitHub Pages, etc.). Kept as the fork-friendly fallback.
+- **`ssr`** — `adapter-cloudflare`, output in `.svelte-kit/cloudflare/`. Public read routes (`/d/[did]/[rkey]`, `/history`, `/v/[vrkey]`, `/diff`) server-render on the Worker so first paint ships HTML; auth-required routes (`/`, `/new`, `/d/[did]/[rkey]/edit`) opt out via their own `+page.ts` (`export const ssr = false`) because they need the in-browser OAuth + DPoP agent.
+
+The CI deploy workflow (`.github/workflows/deploy.yml`) builds in SSR mode (`PUBLIC_BUILD_MODE=ssr`). `npm run build` with no env still produces the SPA — exercise both before changes that touch routing, data loading, or imports.
+
+Build mode is read at runtime via `src/lib/build-mode.ts` (Vite inlines `import.meta.env.PUBLIC_BUILD_MODE` to a literal). `src/routes/+layout.ts` sets `ssr = BUILD_MODE === 'ssr'`.
+
+### Data loading
+
+Public read routes use **universal `+page.ts` `load` functions** (not `+page.server.ts`). Universal load runs on the Worker in SSR builds and in the browser in SPA builds — same source, no fork. Don't introduce `.server.ts` route files: they tie us to SSR and break the SPA fallback.
+
+The load function pattern returns `{ ..., loadError: string | null }` rather than throwing, so the page keeps control of its error UI.
+
+Svelte 5 **runes mode is forced** for all project files (`svelte.config.js`). Use `$state`, `$derived`, `$effect`, `$props`, etc.; don't fall back to legacy `let`-as-reactive or `$:` syntax. Stateful stores are written as classes with rune-typed fields in `*.svelte.ts` files (see `src/lib/atproto/auth.svelte.ts` — exported as the singleton `auth`). `auth.svelte.ts` imports `@atproto/oauth-client-browser` at module load; that's import-safe on the Worker (a console warning about Locks API appears but is harmless), and the actual OAuth client is only instantiated inside `onMount` in the client.
 
 ### atproto data model (`src/lib/atproto/`)
 
@@ -60,13 +76,13 @@ For unauthenticated appview reads (e.g. profiles in `profile.ts`), hit `https://
 
 ### Deployment
 
-Production is **Cloudflare Pages** at `requested.fyi`. `.github/workflows/deploy.yml` runs on push to `main`: `npm ci` → `npm run check` → `npm run lint` → `npm run build` → `cloudflare/wrangler-action@v3` deploys `build/` to the Pages project named `requested`. Requires repo secrets `CLOUDFLARE_API_TOKEN` (Pages: Edit token) and `CLOUDFLARE_ACCOUNT_ID`.
+Production is **Cloudflare Pages** at `requested.fyi`. `.github/workflows/deploy.yml` runs on push to `main`: `npm ci` → `npm run check` → `npm run lint` → `PUBLIC_BUILD_MODE=ssr npm run build` → `cloudflare/wrangler-action@v3` deploys `.svelte-kit/cloudflare/` to the Pages project named `requested`. Requires repo secrets `CLOUDFLARE_API_TOKEN` (Pages: Edit token) and `CLOUDFLARE_ACCOUNT_ID`.
 
-`static/_redirects` (`/* /index.html 200`) tells Cloudflare Pages to fall back to the SPA shell for unknown paths — required because every route is client-rendered.
+There is no `static/_redirects` file — adapter-cloudflare handles routing through the Worker. If forking and deploying the SPA build to Cloudflare Pages, add `static/_redirects` containing `/* /index.html 200` so unknown paths fall back to the SPA shell.
 
 ### Markdown rendering
 
-`src/lib/markdown.ts` renders with `marked` and **always** runs the output through DOMPurify. Bodies come from arbitrary users' PDSes — never render untrusted markdown/HTML without sanitizing.
+`src/lib/markdown.ts` renders with `marked` and **always** sanitizes the output. The sanitizer is environment-aware: DOMPurify in the browser, `sanitize-html` on the Worker (via the `@sanitize-server` Vite alias, which resolves to `src/lib/sanitize-server.ssr.ts` in SSR builds and a throw-only stub in SPA builds — see `vite.config.ts`). Bodies come from arbitrary users' PDSes — never render untrusted markdown/HTML without sanitizing. The server-side import is dynamic and gated on `$app/environment.browser` so sanitize-html doesn't ship to the client bundle.
 
 ### Routes
 

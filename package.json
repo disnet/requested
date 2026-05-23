@@ -6,8 +6,11 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
+		"dev:ssr": "PUBLIC_BUILD_MODE=ssr vite dev",
 		"build": "vite build",
+		"build:ssr": "PUBLIC_BUILD_MODE=ssr vite build",
 		"preview": "vite preview",
+		"preview:ssr": "npm run build:ssr && wrangler pages dev .svelte-kit/cloudflare --compatibility-date=2025-05-23 --compatibility-flag=nodejs_compat",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
@@ -17,10 +20,12 @@
 	"devDependencies": {
 		"@eslint/compat": "^2.0.4",
 		"@eslint/js": "^10.0.1",
+		"@sveltejs/adapter-cloudflare": "^7.2.8",
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.57.0",
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
 		"@types/node": "^22",
+		"@types/sanitize-html": "^2.16.1",
 		"eslint": "^10.2.0",
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-svelte": "^3.17.0",
@@ -45,6 +50,7 @@
 		"codemirror": "^6.0.2",
 		"diff": "^9.0.0",
 		"dompurify": "^3.4.5",
-		"marked": "^18.0.4"
+		"marked": "^18.0.4",
+		"sanitize-html": "^2.17.4"
 	}
 }

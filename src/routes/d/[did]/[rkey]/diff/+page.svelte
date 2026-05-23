@@ -2,60 +2,13 @@
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { diffLines, type Change } from 'diff';
-	import {
-		getDocument,
-		getVersion,
-		parseAtUri,
-		type LoadedDocument,
-		type LoadedVersion
-	} from '$lib/atproto/documents';
 
-	let loaded = $state<LoadedDocument | null>(null);
-	let from = $state<LoadedVersion | null>(null);
-	let to = $state<LoadedVersion | null>(null);
-	let error = $state<string | null>(null);
+	const { data } = $props();
 
-	$effect(() => {
-		const { did, rkey } = page.params as { did: string; rkey: string };
-		const fromRkey = page.url.searchParams.get('from');
-		const toRkey = page.url.searchParams.get('to');
-		loaded = null;
-		from = null;
-		to = null;
-		error = null;
-		void (async () => {
-			try {
-				const doc = await getDocument(did, rkey);
-				loaded = doc;
-				if (!doc.version) {
-					error = 'This document has no versions.';
-					return;
-				}
-
-				const toV = toRkey
-					? await getVersion(did, toRkey)
-					: { ...doc.version, rkey: parseAtUri(doc.version.uri).rkey };
-
-				let fromV: LoadedVersion | null = null;
-				if (fromRkey) {
-					fromV = await getVersion(did, fromRkey);
-				} else if (toV.value.previousVersion) {
-					const prevRkey = parseAtUri(toV.value.previousVersion.uri).rkey;
-					fromV = await getVersion(did, prevRkey);
-				}
-
-				if (!fromV) {
-					error = 'No earlier version to diff against — this is the first version.';
-					to = toV;
-					return;
-				}
-				from = fromV;
-				to = toV;
-			} catch (err) {
-				error = err instanceof Error ? err.message : String(err);
-			}
-		})();
-	});
+	const loaded = $derived(data.doc);
+	const from = $derived(data.from);
+	const to = $derived(data.to);
+	const error = $derived(data.loadError);
 
 	type DiffLine = { kind: 'add' | 'del' | 'context'; text: string; n: number };
 

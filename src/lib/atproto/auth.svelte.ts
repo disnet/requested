@@ -21,7 +21,7 @@ class AuthStore {
 
 	async init(): Promise<void> {
 		try {
-			const client = getOAuthClient();
+			const client = await getOAuthClient();
 			const result = await client.init();
 			if (result?.session) {
 				this.session = result.session;
@@ -38,7 +38,7 @@ class AuthStore {
 
 	async signIn(handleOrDid: string): Promise<void> {
 		this.error = null;
-		const client = getOAuthClient();
+		const client = await getOAuthClient();
 		// signInRedirect navigates away; the promise never resolves on success.
 		await client.signInRedirect(handleOrDid.trim());
 	}

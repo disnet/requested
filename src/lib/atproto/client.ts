@@ -1,7 +1,4 @@
-import {
-	BrowserOAuthClient,
-	buildAtprotoLoopbackClientMetadata
-} from '@atproto/oauth-client-browser';
+import type { BrowserOAuthClient } from '@atproto/oauth-client-browser';
 import type { OAuthClientMetadataInput } from '@atproto/oauth-types';
 import {
 	COMMENT_NSID,
@@ -31,20 +28,27 @@ const PROD_ORIGIN = 'https://requested.fyi';
 
 let client: BrowserOAuthClient | undefined;
 
-export function getOAuthClient(): BrowserOAuthClient {
+// `@atproto/oauth-client-browser` touches `BroadcastChannel` at module-init,
+// which crashes on the Cloudflare Worker. We avoid the static import and load
+// the package lazily — this function is only ever called from the browser
+// (gated by the `typeof window` check), so the dynamic import never runs on
+// the Worker. Type-only imports above are erased by tsc and don't generate
+// runtime references.
+export async function getOAuthClient(): Promise<BrowserOAuthClient> {
 	if (typeof window === 'undefined') {
 		throw new Error('getOAuthClient() must be called in the browser');
 	}
 	if (!client) {
+		const { BrowserOAuthClient } = await import('@atproto/oauth-client-browser');
 		client = new BrowserOAuthClient({
-			clientMetadata: buildClientMetadata(),
+			clientMetadata: await buildClientMetadata(),
 			handleResolver: 'https://bsky.social'
 		});
 	}
 	return client;
 }
 
-function buildClientMetadata(): OAuthClientMetadataInput {
+async function buildClientMetadata(): Promise<OAuthClientMetadataInput> {
 	if (window.location.origin === PROD_ORIGIN) {
 		// Production: `client_id` MUST be the public URL where the atproto
 		// authorization server fetches this metadata. These fields MUST stay
@@ -64,6 +68,7 @@ function buildClientMetadata(): OAuthClientMetadataInput {
 	}
 	// Dev / loopback: synthetic `client_id` derived from scope per the atproto
 	// loopback-client convention. Requires the dev server to bind 127.0.0.1.
+	const { buildAtprotoLoopbackClientMetadata } = await import('@atproto/oauth-client-browser');
 	return buildAtprotoLoopbackClientMetadata({
 		scope: SCOPES,
 		redirect_uris: [`${window.location.origin}/`]

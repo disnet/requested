@@ -1,5 +1,28 @@
 import { marked, type Token, type Tokens } from 'marked';
 import DOMPurify from 'dompurify';
+import { browser } from '$app/environment';
+
+// Sanitize marked output. DOMPurify is the canonical implementation but
+// requires a DOM, so on the Cloudflare Worker we route through sanitize-html
+// via the @sanitize-server alias (stubbed out in SPA builds at build time).
+//
+// `browser` is replaced with a literal `true` (client) / `false` (server) by
+// SvelteKit, so the dynamic import in the !browser branch tree-shakes out of
+// the client bundle. Without this, every SSR build would ship ~80KB of
+// sanitize-html down to readers' browsers.
+let sanitizeOnServer: ((html: string) => string) | null = null;
+if (!browser) {
+	sanitizeOnServer = (await import('@sanitize-server')).sanitizeOnServer;
+}
+
+function sanitize(html: string): string {
+	if (browser) {
+		return DOMPurify.sanitize(html, { ADD_ATTR: ['id'] });
+	}
+	// Non-null on the server branch; only the `browser` path executes in the
+	// client bundle (and DCE drops the import above on that side).
+	return sanitizeOnServer!(html);
+}
 
 export type RenderOptions = {
 	/** Strip the leading H1 from the rendered output. Used by the reader, which
@@ -53,7 +76,7 @@ export function renderMarkdown(src: string, opts: RenderOptions = {}): string {
 		body = body.replace(/^\s*#\s+.*?\n/, '');
 	}
 	const rawHtml = marked.parse(body, { async: false, renderer: createRenderer() }) as string;
-	return DOMPurify.sanitize(rawHtml, { ADD_ATTR: ['id'] });
+	return sanitize(rawHtml);
 }
 
 // Same as renderMarkdown but returns one entry per top-level block, each
@@ -115,7 +138,7 @@ export function renderMarkdownBlocks(src: string, opts: RenderOptions = {}): Ren
 
 		blocks.push({
 			line: startLine,
-			html: DOMPurify.sanitize(html, { ADD_ATTR: ['id'] }),
+			html: sanitize(html),
 			subLines
 		});
 	}
