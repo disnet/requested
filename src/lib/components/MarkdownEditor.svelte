@@ -138,21 +138,8 @@
 	.editor :global(.cm-scroller) {
 		max-height: 70vh;
 	}
-	/* 72ch right-edge guide. CodeMirror's content area takes the gutter offset
-	   into account through left padding, so the guide sits at the right side
-	   of the typing column. */
 	.editor :global(.cm-content) {
-		position: relative;
 		max-width: calc(72ch + var(--space-4));
-	}
-	.editor :global(.cm-content::after) {
-		content: '';
-		position: absolute;
-		top: 0;
-		bottom: 0;
-		right: 0;
-		width: 1px;
-		background: var(--rule);
-		pointer-events: none;
+		margin: 0 auto;
 	}
 </style>
