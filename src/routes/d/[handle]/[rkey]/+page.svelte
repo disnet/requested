@@ -1288,6 +1288,7 @@
 
 	.rail-card {
 		position: absolute;
+		top: 0;
 		left: var(--space-5);
 		right: 0;
 		padding: var(--space-3) var(--space-4);
