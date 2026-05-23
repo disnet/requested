@@ -13,6 +13,11 @@ concurrency:
   group: pages-deploy-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Needed at `svelte-kit sync` time so `$env/static/public` types
+  # `PUBLIC_BUILD_MODE`; otherwise the Typecheck step fails before Build runs.
+  PUBLIC_BUILD_MODE: ssr
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
