@@ -583,23 +583,23 @@
 		{/if}
 
 		{#if activity === null}
-			<section class="subsection" aria-label="Activity">
+			<section class="subsection" aria-label="Reading list">
 				<header class="subsection-head">
-					<h2 class="subsection-title">Activity</h2>
+					<h2 class="subsection-title">Reading list</h2>
 				</header>
-				<p class="muted activity-loading">Loading activity…</p>
+				<p class="muted activity-loading">Loading reading list…</p>
 			</section>
 		{:else if activityError}
-			<section class="subsection" aria-label="Activity">
+			<section class="subsection" aria-label="Reading list">
 				<header class="subsection-head">
-					<h2 class="subsection-title">Activity</h2>
+					<h2 class="subsection-title">Reading list</h2>
 				</header>
 				<p class="error">{activityError}</p>
 			</section>
 		{:else if activity.length > 0}
-			<section class="subsection" aria-label="Activity">
+			<section class="subsection" aria-label="Reading list">
 				<header class="subsection-head">
-					<h2 class="subsection-title">Activity</h2>
+					<h2 class="subsection-title">Reading list</h2>
 				</header>
 				<ol class="ledger ledger-activity">
 					{#each activity as a (a.uri)}
@@ -608,7 +608,6 @@
 								class="ledger-link ledger-link-act"
 								href={resolve('/d/[did]/[rkey]', { did: a.did, rkey: a.rkey })}
 							>
-								<span class="ledger-tag ledger-tag-{a.tag}">{a.tag}</span>
 								<span class="ledger-byline">by @{a.authorHandle}</span>
 								<span class="ledger-title">{a.title}</span>
 								<span class="ledger-dots" aria-hidden="true"></span>
@@ -857,9 +856,6 @@
 		font-size: var(--text-sm);
 	}
 
-	.ledger-link-act {
-		grid-template-columns: auto auto 1fr auto auto;
-	}
 	.ledger-tag {
 		font-size: var(--text-2xs);
 		text-transform: uppercase;
@@ -867,9 +863,6 @@
 		color: var(--ink-3);
 		min-width: 8ch;
 		transition: color var(--dur-fast) var(--ease-out-quart);
-	}
-	.ledger-link-act:hover .ledger-tag {
-		color: var(--accent);
 	}
 	.ledger-byline {
 		font-size: var(--text-sm);
@@ -1105,13 +1098,10 @@
 			display: none;
 		}
 		.ledger-link-act {
-			grid-template-columns: auto 1fr auto;
+			grid-template-columns: 1fr auto;
 			grid-template-areas:
-				'tag byline date'
-				'title title title';
-		}
-		.ledger-tag {
-			grid-area: tag;
+				'byline date'
+				'title title';
 		}
 		.ledger-byline {
 			grid-area: byline;
