@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import type { Agent } from '@atproto/api';
 	import { auth } from '$lib/atproto/auth.svelte';
@@ -424,13 +425,12 @@
 			const target = e.target as HTMLElement | null;
 			const btn = target?.closest<HTMLElement>('.md-sub-btn');
 			if (!btn) return;
-			if (auth.status !== 'signed-in') return;
 			const lineStr = btn.dataset.mdAdd;
 			if (lineStr == null) return;
 			const lineNum = Number(lineStr);
 			if (!Number.isFinite(lineNum)) return;
 			e.preventDefault();
-			openComposer(lineNum);
+			tryOpenComposer(lineNum);
 		};
 		article.addEventListener('click', onClick);
 		return () => article.removeEventListener('click', onClick);
@@ -548,6 +548,29 @@
 		// classes before we measure for the scroll.
 		requestAnimationFrame(() => scrollToLine(line, false));
 	});
+
+	// Sign-in screen lives at `/`. The OAuth flow redirects back there too,
+	// so a signed-out user clicking a comment affordance lands on the form
+	// rather than getting silently denied.
+	function gotoSignIn() {
+		void goto(resolve('/'));
+	}
+
+	function tryOpenComposer(line: number | null) {
+		if (auth.status !== 'signed-in') {
+			gotoSignIn();
+			return;
+		}
+		openComposer(line);
+	}
+
+	function tryOpenReply(target: LoadedComment) {
+		if (auth.status !== 'signed-in') {
+			gotoSignIn();
+			return;
+		}
+		openReply(target);
+	}
 
 	function openComposer(line: number | null) {
 		composer = { line, parent: null, replyToHandle: null };
@@ -852,7 +875,7 @@
 				</nav>
 			</header>
 
-			<div class="prose" class:can-comment={auth.status === 'signed-in'}>
+			<div class="prose">
 				{#each renderedBlocks as block, i (i)}
 					{@const blockAllLines = [block.line, ...block.subLines]}
 					{@const blockLineGroups = groupedThreads.lineGroups.filter(([l]) =>
@@ -894,13 +917,17 @@
 								¶
 							</a>
 						{/if}
-						{#if auth.status === 'signed-in' && !hasSubAnchors}
+						{#if !hasSubAnchors}
 							<button
 								type="button"
 								class="md-comment-btn"
-								aria-label={`Add comment on line ${block.line}`}
-								title={`Comment on line ${block.line}`}
-								onclick={() => openComposer(block.line)}
+								aria-label={auth.status === 'signed-in'
+									? `Add comment on line ${block.line}`
+									: `Sign in to comment on line ${block.line}`}
+								title={auth.status === 'signed-in'
+									? `Comment on line ${block.line}`
+									: 'Sign in to comment'}
+								onclick={() => tryOpenComposer(block.line)}
 							>
 								[+]
 							</button>
@@ -957,16 +984,10 @@
 					{#if commentsError}
 						<p class="error rail-error">{commentsError}</p>
 					{/if}
-					{#if auth.status === 'signed-in'}
-						{#if composer?.line == null && composer !== null}
-							<!-- whole-doc composer is open and will appear in the doc card -->
-						{:else}
-							<button type="button" class="rail-doc-btn" onclick={() => openComposer(null)}>
-								[ comment on document ]
-							</button>
-						{/if}
-					{:else}
-						<span class="muted rail-signin">Sign in to add comments.</span>
+					{#if !(composer?.line == null && composer !== null)}
+						<button type="button" class="rail-doc-btn" onclick={() => tryOpenComposer(null)}>
+							{auth.status === 'signed-in' ? '[ comment on document ]' : '[ sign in to comment ]'}
+						</button>
 					{/if}
 				</header>
 
@@ -1010,14 +1031,10 @@
 						<span class="rail-count">{groupedThreads.docLevel.length}</span>
 					{/if}
 				</h2>
-				{#if auth.status === 'signed-in'}
-					{#if composer?.line !== null}
-						<button type="button" class="bracket-btn" onclick={() => openComposer(null)}>
-							[ comment on document ]
-						</button>
-					{/if}
-				{:else}
-					<span class="muted">Sign in to add comments.</span>
+				{#if composer?.line !== null}
+					<button type="button" class="bracket-btn" onclick={() => tryOpenComposer(null)}>
+						{auth.status === 'signed-in' ? '[ comment on document ]' : '[ sign in to comment ]'}
+					</button>
 				{/if}
 			</header>
 
@@ -1173,15 +1190,13 @@
 			{@render commentCard(thread.root, true, isResolved)}
 			{#if !isResolved}
 				<div class="comment-actions">
-					{#if auth.status === 'signed-in'}
-						<button
-							type="button"
-							class="bracket-btn bracket-btn-sm"
-							onclick={() => openReply(thread.root)}
-						>
-							[ reply ]
-						</button>
-					{/if}
+					<button
+						type="button"
+						class="bracket-btn bracket-btn-sm"
+						onclick={() => tryOpenReply(thread.root)}
+					>
+						{auth.status === 'signed-in' ? '[ reply ]' : '[ sign in to reply ]'}
+					</button>
 					{#if canResolve(thread)}
 						<button
 							type="button"
@@ -1202,10 +1217,14 @@
 			{/if}
 			{#each thread.replies as r (r.uri)}
 				{@render commentCard(r, false, isResolved)}
-				{#if !isResolved && auth.status === 'signed-in'}
+				{#if !isResolved}
 					<div class="comment-actions reply-actions">
-						<button type="button" class="bracket-btn bracket-btn-sm" onclick={() => openReply(r)}>
-							[ reply ]
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							onclick={() => tryOpenReply(r)}
+						>
+							{auth.status === 'signed-in' ? '[ reply ]' : '[ sign in to reply ]'}
 						</button>
 					</div>
 				{/if}
@@ -1344,15 +1363,13 @@
 			{@render commentBody(thread.root, true, isResolved)}
 			{#if !isResolved}
 				<div class="comment-actions rail-actions">
-					{#if auth.status === 'signed-in'}
-						<button
-							type="button"
-							class="bracket-btn bracket-btn-sm"
-							onclick={() => openReply(thread.root)}
-						>
-							[ reply ]
-						</button>
-					{/if}
+					<button
+						type="button"
+						class="bracket-btn bracket-btn-sm"
+						onclick={() => tryOpenReply(thread.root)}
+					>
+						{auth.status === 'signed-in' ? '[ reply ]' : '[ sign in to reply ]'}
+					</button>
 					{#if canResolve(thread)}
 						<button
 							type="button"
@@ -1373,10 +1390,14 @@
 			{/if}
 			{#each thread.replies as r (r.uri)}
 				{@render commentBody(r, false, isResolved)}
-				{#if !isResolved && auth.status === 'signed-in'}
+				{#if !isResolved}
 					<div class="comment-actions rail-actions reply-actions">
-						<button type="button" class="bracket-btn bracket-btn-sm" onclick={() => openReply(r)}>
-							[ reply ]
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm"
+							onclick={() => tryOpenReply(r)}
+						>
+							{auth.status === 'signed-in' ? '[ reply ]' : '[ sign in to reply ]'}
 						</button>
 					</div>
 				{/if}
@@ -1489,9 +1510,6 @@
 	.rail-doc-btn:hover {
 		color: var(--accent);
 		text-decoration-color: currentColor;
-	}
-	.rail-signin {
-		font-size: var(--text-xs);
 	}
 	.rail-error {
 		margin: 0;
@@ -2104,14 +2122,6 @@
 	.prose :global(.md-code-line > .md-sub-btn),
 	.prose :global(.md-code-line > .md-sub-link) {
 		top: calc(var(--space-3) + var(--md-li, 0) * 0.9 * var(--text-base) * 1.5);
-	}
-
-	/* When the viewer isn't signed in, hide every per-line affordance — both
-	   the block-level button (already conditionally rendered by Svelte) and
-	   every injected sub-anchor button. Belt-and-braces; the click handler
-	   also no-ops when signed out. */
-	.prose:not(.can-comment) :global(.md-sub-btn) {
-		display: none;
 	}
 
 	.prose-sm {
