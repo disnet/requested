@@ -2,6 +2,8 @@
 // Used for display only (avatar + handle). Avoids needing the `transition:generic`
 // OAuth scope — see ~/.claude memory `feedback-atproto-oauth-scopes`.
 
+import { CACHE_TTL, edgeCache } from './edge-cache';
+
 export type Profile = {
 	did: string;
 	handle: string;
@@ -14,7 +16,7 @@ const APPVIEW = 'https://public.api.bsky.app';
 export async function fetchProfile(actor: string, signal?: AbortSignal): Promise<Profile> {
 	const url = new URL('/xrpc/app.bsky.actor.getProfile', APPVIEW);
 	url.searchParams.set('actor', actor);
-	const res = await fetch(url, { signal });
+	const res = await fetch(url, { signal, ...edgeCache(CACHE_TTL.PROFILE) });
 	if (!res.ok) {
 		throw new Error(`getProfile ${actor}: ${res.status} ${res.statusText}`);
 	}

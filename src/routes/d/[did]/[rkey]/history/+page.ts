@@ -12,13 +12,16 @@ export type HistoryPageData = {
 	loadError: string | null;
 };
 
-export const load: PageLoad = async ({ params }): Promise<HistoryPageData> => {
+export const load: PageLoad = async ({ params, setHeaders }): Promise<HistoryPageData> => {
 	const { did, rkey } = params;
 	try {
 		const [doc, versions] = await Promise.all([
 			getDocument(did, rkey),
 			listVersionChain(did, rkey)
 		]);
+		setHeaders({
+			'cache-control': 'public, s-maxage=60, stale-while-revalidate=600'
+		});
 		return { doc, versions, loadError: null };
 	} catch (err) {
 		return {

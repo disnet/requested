@@ -12,13 +12,18 @@ export type DocPageData = {
 	loadError: string | null;
 };
 
-export const load: PageLoad = async ({ params }): Promise<DocPageData> => {
+export const load: PageLoad = async ({ params, setHeaders }): Promise<DocPageData> => {
 	const { did, rkey } = params;
 	try {
 		const [doc, profile] = await Promise.all([
 			getDocument(did, rkey),
 			fetchProfile(did).catch(() => null)
 		]);
+		// SSR-only: no-op in the browser. Edge serves cached HTML for 60s and a
+		// stale copy while revalidating for the next 10min after that.
+		setHeaders({
+			'cache-control': 'public, s-maxage=60, stale-while-revalidate=600'
+		});
 		return { doc, profile, loadError: null };
 	} catch (err) {
 		return {

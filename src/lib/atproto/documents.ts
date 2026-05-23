@@ -1,4 +1,5 @@
 import type { Agent } from '@atproto/api';
+import { CACHE_TTL, edgeCache } from './edge-cache';
 import {
 	DOCUMENT_NSID,
 	DOCUMENT_VERSION_NSID,
@@ -54,7 +55,7 @@ export async function resolvePdsEndpoint(did: string): Promise<string> {
 	} else {
 		throw new Error(`Unsupported DID method: ${did}`);
 	}
-	const res = await fetch(docUrl);
+	const res = await fetch(docUrl, edgeCache(CACHE_TTL.DID_DOC));
 	if (!res.ok) throw new Error(`DID doc ${did}: ${res.status}`);
 	const doc = (await res.json()) as {
 		service?: Array<{ id: string; type: string; serviceEndpoint: string }>;
@@ -175,13 +176,14 @@ export async function fetchRecord<T>(
 	pds: string,
 	repo: string,
 	collection: string,
-	rkey: string
+	rkey: string,
+	cacheTtl?: number
 ): Promise<GetRecordResponse<T>> {
 	const url = new URL('/xrpc/com.atproto.repo.getRecord', pds);
 	url.searchParams.set('repo', repo);
 	url.searchParams.set('collection', collection);
 	url.searchParams.set('rkey', rkey);
-	const res = await fetch(url);
+	const res = await fetch(url, cacheTtl ? edgeCache(cacheTtl) : undefined);
 	if (!res.ok) throw new Error(`getRecord ${collection}/${rkey}: ${res.status}`);
 	return res.json();
 }
@@ -192,7 +194,13 @@ export async function fetchRecord<T>(
 export async function getVersionByUri(uri: string): Promise<DocumentVersionRecord> {
 	const { repo, collection, rkey } = parseAtUri(uri);
 	const pds = await resolvePdsEndpoint(repo);
-	const v = await fetchRecord<DocumentVersionRecord>(pds, repo, collection, rkey);
+	const v = await fetchRecord<DocumentVersionRecord>(
+		pds,
+		repo,
+		collection,
+		rkey,
+		CACHE_TTL.IMMUTABLE_RECORD
+	);
 	return v.value;
 }
 
@@ -207,7 +215,13 @@ export type LoadedVersion = {
 // diff routes where both parts come from URL params.
 export async function getVersion(did: string, vrkey: string): Promise<LoadedVersion> {
 	const pds = await resolvePdsEndpoint(did);
-	const v = await fetchRecord<DocumentVersionRecord>(pds, did, DOCUMENT_VERSION_NSID, vrkey);
+	const v = await fetchRecord<DocumentVersionRecord>(
+		pds,
+		did,
+		DOCUMENT_VERSION_NSID,
+		vrkey,
+		CACHE_TTL.IMMUTABLE_RECORD
+	);
 	return { uri: v.uri, cid: v.cid, rkey: vrkey, value: v.value };
 }
 
@@ -217,7 +231,13 @@ export async function getVersion(did: string, vrkey: string): Promise<LoadedVers
 // the prefix we did manage to load.
 export async function listVersionChain(did: string, rkey: string): Promise<LoadedVersion[]> {
 	const pds = await resolvePdsEndpoint(did);
-	const doc = await fetchRecord<DocumentRecord>(pds, did, DOCUMENT_NSID, rkey);
+	const doc = await fetchRecord<DocumentRecord>(
+		pds,
+		did,
+		DOCUMENT_NSID,
+		rkey,
+		CACHE_TTL.MUTABLE_RECORD
+	);
 	if (!doc.value.currentVersion) return [];
 
 	const versions: LoadedVersion[] = [];
@@ -225,7 +245,13 @@ export async function listVersionChain(did: string, rkey: string): Promise<Loade
 	while (nextUri) {
 		const vrkey: string = parseAtUri(nextUri).rkey;
 		try {
-			const v = await fetchRecord<DocumentVersionRecord>(pds, did, DOCUMENT_VERSION_NSID, vrkey);
+			const v = await fetchRecord<DocumentVersionRecord>(
+				pds,
+				did,
+				DOCUMENT_VERSION_NSID,
+				vrkey,
+				CACHE_TTL.IMMUTABLE_RECORD
+			);
 			versions.push({ uri: v.uri, cid: v.cid, rkey: vrkey, value: v.value });
 			nextUri = v.value.previousVersion?.uri;
 		} catch {
@@ -240,7 +266,13 @@ export async function listVersionChain(did: string, rkey: string): Promise<Loade
 // and for visitors viewing someone else's RFC.
 export async function getDocument(did: string, rkey: string): Promise<LoadedDocument> {
 	const pds = await resolvePdsEndpoint(did);
-	const doc = await fetchRecord<DocumentRecord>(pds, did, DOCUMENT_NSID, rkey);
+	const doc = await fetchRecord<DocumentRecord>(
+		pds,
+		did,
+		DOCUMENT_NSID,
+		rkey,
+		CACHE_TTL.MUTABLE_RECORD
+	);
 
 	let version: LoadedDocument['version'] = null;
 	if (doc.value.currentVersion) {
@@ -249,7 +281,8 @@ export async function getDocument(did: string, rkey: string): Promise<LoadedDocu
 			pds,
 			did,
 			DOCUMENT_VERSION_NSID,
-			versionRkey
+			versionRkey,
+			CACHE_TTL.IMMUTABLE_RECORD
 		);
 		version = { uri: v.uri, cid: v.cid, value: v.value };
 	}

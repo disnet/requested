@@ -14,7 +14,7 @@ export type DiffPageData = {
 	loadError: string | null;
 };
 
-export const load: PageLoad = async ({ params, url }): Promise<DiffPageData> => {
+export const load: PageLoad = async ({ params, url, setHeaders }): Promise<DiffPageData> => {
 	const { did, rkey } = params;
 	const fromRkey = url.searchParams.get('from');
 	const toRkey = url.searchParams.get('to');
@@ -44,6 +44,9 @@ export const load: PageLoad = async ({ params, url }): Promise<DiffPageData> => 
 				loadError: 'No earlier version to diff against — this is the first version.'
 			};
 		}
+		setHeaders({
+			'cache-control': 'public, s-maxage=60, stale-while-revalidate=600'
+		});
 		return { doc, from: fromV, to: toV, loadError: null };
 	} catch (err) {
 		return {
