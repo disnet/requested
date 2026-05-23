@@ -3,11 +3,19 @@
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { listMyDocuments, type DocumentSummary } from '$lib/atproto/documents';
 	import { searchActorsTypeahead, type Profile } from '$lib/atproto/profile';
+	import { loadActivity, type ActivityEntry } from '$lib/activity';
 
 	let handle = $state('');
 	let submitting = $state(false);
 	let docs = $state<DocumentSummary[] | null>(null);
 	let docsError = $state<string | null>(null);
+
+	// Activity ledger: documents the signed-in user has either commented on
+	// (read from their PDS) or read in this browser (local-only). `null` means
+	// "still loading" so the section can show a header + loading line;
+	// `[]` means "loaded, nothing here" and the section hides entirely.
+	let activity = $state<ActivityEntry[] | null>(null);
+	let activityError = $state<string | null>(null);
 
 	let suggestions = $state<Profile[]>([]);
 	let activeIndex = $state(-1);
@@ -97,6 +105,8 @@
 		if (!agent || !did) {
 			docs = null;
 			docsError = null;
+			activity = null;
+			activityError = null;
 			return;
 		}
 		void (async () => {
@@ -108,6 +118,16 @@
 			} catch (err) {
 				docsError = err instanceof Error ? err.message : String(err);
 				docs = [];
+			}
+		})();
+		void (async () => {
+			activity = null;
+			activityError = null;
+			try {
+				activity = await loadActivity(agent, did);
+			} catch (err) {
+				activityError = err instanceof Error ? err.message : String(err);
+				activity = [];
 			}
 		})();
 	});
@@ -233,12 +253,7 @@
 {:else}
 	<section class="column docs">
 		<header class="docs-header">
-			<div>
-				<h1 class="docs-title">Documents</h1>
-				<p class="docs-sub muted">
-					Documents published to <code>{auth.profile?.handle ?? auth.did}</code>
-				</p>
-			</div>
+			<h1 class="docs-title">Documents</h1>
 			<a class="bracket-btn bracket-btn-primary" href={resolve('/new')}>[ new&nbsp;document ]</a>
 		</header>
 
@@ -269,6 +284,46 @@
 					</li>
 				{/each}
 			</ol>
+		{/if}
+
+		{#if activity === null}
+			<section class="subsection" aria-label="Activity">
+				<header class="subsection-head">
+					<h2 class="subsection-title">Activity</h2>
+				</header>
+				<p class="muted activity-loading">Loading activity…</p>
+			</section>
+		{:else if activityError}
+			<section class="subsection" aria-label="Activity">
+				<header class="subsection-head">
+					<h2 class="subsection-title">Activity</h2>
+				</header>
+				<p class="error">{activityError}</p>
+			</section>
+		{:else if activity.length > 0}
+			<section class="subsection" aria-label="Activity">
+				<header class="subsection-head">
+					<h2 class="subsection-title">Activity</h2>
+				</header>
+				<ol class="ledger ledger-activity">
+					{#each activity as a (a.uri)}
+						<li class="ledger-row">
+							<a
+								class="ledger-link ledger-link-act"
+								href={resolve('/d/[did]/[rkey]', { did: a.did, rkey: a.rkey })}
+							>
+								<span class="ledger-tag ledger-tag-{a.tag}">{a.tag}</span>
+								<span class="ledger-byline">by @{a.authorHandle}</span>
+								<span class="ledger-title">{a.title}</span>
+								<span class="ledger-dots" aria-hidden="true"></span>
+								<time class="ledger-date" datetime={a.interactedAt}>
+									{formatDate(a.interactedAt)}
+								</time>
+							</a>
+						</li>
+					{/each}
+				</ol>
+			</section>
 		{/if}
 	</section>
 {/if}
@@ -417,13 +472,7 @@
 		font-size: var(--text-2xl);
 		font-weight: 700;
 		letter-spacing: var(--track-tight);
-		margin: 0 0 var(--space-1);
-	}
-	.docs-sub code {
-		background: var(--surface-sunken);
-		padding: 1px 4px;
-		border: var(--border-thin) solid var(--rule);
-		color: var(--ink-2);
+		margin: 0;
 	}
 	.docs-empty {
 		text-align: center;
@@ -486,6 +535,55 @@
 		font-variant-numeric: tabular-nums;
 	}
 
+	/* ---------- Activity subsection ---------- */
+	.subsection {
+		margin-top: var(--space-7);
+	}
+	.subsection-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--space-4);
+		margin-bottom: var(--space-3);
+		padding-bottom: var(--space-2);
+		border-bottom: var(--border-thin) solid var(--rule);
+	}
+	.subsection-title {
+		font-size: var(--text-sm);
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-2);
+		margin: 0;
+	}
+	.activity-loading {
+		padding: var(--space-3) var(--space-2);
+		font-size: var(--text-sm);
+	}
+
+	.ledger-link-act {
+		grid-template-columns: auto auto 1fr auto auto;
+	}
+	.ledger-tag {
+		font-size: var(--text-2xs);
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-3);
+		min-width: 8ch;
+		transition: color var(--dur-fast) var(--ease-out-quart);
+	}
+	.ledger-link-act:hover .ledger-tag {
+		color: var(--accent);
+	}
+	.ledger-byline {
+		font-size: var(--text-sm);
+		color: var(--ink-3);
+		max-width: 24ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	@media (max-width: 640px) {
 		.docs-header {
 			flex-direction: column;
@@ -511,6 +609,19 @@
 		}
 		.ledger-dots {
 			display: none;
+		}
+		.ledger-link-act {
+			grid-template-columns: auto 1fr auto;
+			grid-template-areas:
+				'tag byline date'
+				'title title title';
+		}
+		.ledger-tag {
+			grid-area: tag;
+		}
+		.ledger-byline {
+			grid-area: byline;
+			max-width: none;
 		}
 	}
 </style>

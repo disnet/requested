@@ -261,6 +261,24 @@ export async function listVersionChain(did: string, rkey: string): Promise<Loade
 	return versions;
 }
 
+// Reads only the document record (no version body) from any user's PDS. Used
+// by the Activity ledger on `/`, where we fan out doc lookups per row and
+// don't need the body — just the title.
+export async function fetchDocumentSummary(
+	did: string,
+	rkey: string
+): Promise<DocumentSummary & { did: string }> {
+	const pds = await resolvePdsEndpoint(did);
+	const doc = await fetchRecord<DocumentRecord>(
+		pds,
+		did,
+		DOCUMENT_NSID,
+		rkey,
+		CACHE_TTL.MUTABLE_RECORD
+	);
+	return { uri: doc.uri, cid: doc.cid, rkey, did, value: doc.value };
+}
+
 // Reads a document and its current version from any user's PDS (unauthenticated).
 // Used by view + edit pages so the same code path works for the signed-in user
 // and for visitors viewing someone else's RFC.

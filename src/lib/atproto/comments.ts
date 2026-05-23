@@ -56,6 +56,29 @@ export async function createComment(
 
 // ---------- reads ----------
 
+// Lists every document the signed-in user has commented on, with the latest
+// comment date per document. Used by the Activity ledger on `/`. Walks their
+// own comment collection once and folds by `document` uri.
+export async function listMyCommentedDocs(agent: Agent, did: string): Promise<Map<string, string>> {
+	const latest = new Map<string, string>();
+	let cursor: string | undefined;
+	do {
+		const res = await agent.com.atproto.repo.listRecords({
+			repo: did,
+			collection: COMMENT_NSID,
+			limit: 100,
+			cursor
+		});
+		for (const r of res.data.records) {
+			const v = r.value as CommentRecord;
+			const prev = latest.get(v.document);
+			if (!prev || v.createdAt > prev) latest.set(v.document, v.createdAt);
+		}
+		cursor = res.data.cursor;
+	} while (cursor);
+	return latest;
+}
+
 // Lists the signed-in user's own comments on a given document by scanning their
 // own repo. This is the latency-free path — Constellation's index can lag a
 // freshly-written comment by tens of seconds, so listAllCommentsOn unions this

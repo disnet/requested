@@ -26,6 +26,7 @@
 	import type { StrongRef } from '$lib/atproto/lexicons';
 	import { fetchProfile, type Profile } from '$lib/atproto/profile';
 	import { renderMarkdown, renderMarkdownBlocks } from '$lib/markdown';
+	import { recordView } from '$lib/viewed-docs';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
 	const { data } = $props();
@@ -141,6 +142,16 @@
 		const agent = auth.agent;
 		const myDid = auth.did;
 		void loadComments(doc, agent, myDid);
+	});
+
+	// Track local read history. Records any successful load of someone else's
+	// document; the signed-in user's own docs already appear in Authored.
+	// Per-device localStorage only — see src/lib/viewed-docs.ts.
+	$effect(() => {
+		const doc = loaded;
+		const myDid = auth.did;
+		if (!doc || !myDid || doc.did === myDid) return;
+		recordView({ uri: doc.uri, did: doc.did, rkey: doc.rkey, viewerDid: myDid });
 	});
 
 	async function loadComments(doc: LoadedDocument, agent: Agent | null, myDid: string | null) {
