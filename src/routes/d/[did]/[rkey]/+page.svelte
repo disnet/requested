@@ -189,6 +189,19 @@
 		loaded?.version ? renderMarkdownBlocks(loaded.version.value.body, { stripLeadingH1: true }) : []
 	);
 
+	// Reverse index from any anchor line (block-level OR sub-anchor) to the
+	// containing block's start line. Used so that opening a composer on, say,
+	// list item line 7 expands the parent block on mobile and so cross-
+	// highlights know which block frames a given sub-anchor.
+	const subToBlock = $derived.by(() => {
+		const map = new Map<number, number>();
+		for (const b of renderedBlocks) {
+			map.set(b.line, b.line);
+			for (const sl of b.subLines) map.set(sl, b.line);
+		}
+		return map;
+	});
+
 	// Display fields for the metadata block
 	const authorHandle = $derived(author?.handle ?? loaded?.did ?? '');
 	const authorDid = $derived(loaded?.did ?? '');
@@ -335,9 +348,15 @@
 				const lineAttr = card.dataset.line;
 				let desired = floor;
 				if (lineAttr) {
-					const block = article.querySelector<HTMLElement>(`.md-block[data-md-line="${lineAttr}"]`);
-					if (block) {
-						desired = block.getBoundingClientRect().top - articleRect.top;
+					// Prefer a sub-anchor (list item, table row, code line) when
+					// one matches — the rail card should sit next to the specific
+					// item, not the outer composite block. Fall back to the block
+					// itself for non-composite lines.
+					const anchor =
+						article.querySelector<HTMLElement>(`.md-sub[data-md-line="${lineAttr}"]`) ??
+						article.querySelector<HTMLElement>(`[data-md-line="${lineAttr}"]`);
+					if (anchor) {
+						desired = anchor.getBoundingClientRect().top - articleRect.top;
 					}
 				}
 				const top = Math.max(desired, prevBottom === floor ? floor : prevBottom + ANCHOR_GAP);
@@ -374,14 +393,93 @@
 		};
 	});
 
+	// Sub-anchor [+] buttons are injected into the rendered HTML by
+	// renderMarkdownBlocks, so they're outside Svelte's reactive scope.
+	// Delegate clicks here: each button carries `data-md-add="<line>"`.
+	$effect(() => {
+		const article = articleEl;
+		if (!article) return;
+		const onClick = (e: MouseEvent) => {
+			const target = e.target as HTMLElement | null;
+			const btn = target?.closest<HTMLElement>('.md-sub-btn');
+			if (!btn) return;
+			if (auth.status !== 'signed-in') return;
+			const lineStr = btn.dataset.mdAdd;
+			if (lineStr == null) return;
+			const lineNum = Number(lineStr);
+			if (!Number.isFinite(lineNum)) return;
+			e.preventDefault();
+			openComposer(lineNum);
+		};
+		article.addEventListener('click', onClick);
+		return () => article.removeEventListener('click', onClick);
+	});
+
+	// Pointer / focus delegation for the active-line cross-highlight. Walks
+	// up from the event target to the closest `[data-md-line]`; that resolves
+	// to a sub-anchor when inside one (e.g., a list item) and the surrounding
+	// block otherwise. Replaces per-block onmouseenter/onfocusin so the
+	// granularity matches the anchor the pointer is actually over.
+	$effect(() => {
+		const article = articleEl;
+		if (!article) return;
+		const resolveLine = (target: EventTarget | null): number | null => {
+			const el = target as HTMLElement | null;
+			const anchor = el?.closest<HTMLElement>('[data-md-line]');
+			const v = anchor?.dataset.mdLine;
+			return v != null ? Number(v) : null;
+		};
+		const onOver = (e: MouseEvent) => {
+			const l = resolveLine(e.target);
+			if (l != null) setActiveLine(l);
+		};
+		const onLeave = () => setActiveLine(null);
+		const onFocusIn = (e: FocusEvent) => {
+			const l = resolveLine(e.target);
+			if (l != null) setActiveLine(l);
+		};
+		const onFocusOut = () => setActiveLine(null);
+		article.addEventListener('mouseover', onOver);
+		article.addEventListener('mouseleave', onLeave);
+		article.addEventListener('focusin', onFocusIn);
+		article.addEventListener('focusout', onFocusOut);
+		return () => {
+			article.removeEventListener('mouseover', onOver);
+			article.removeEventListener('mouseleave', onLeave);
+			article.removeEventListener('focusin', onFocusIn);
+			article.removeEventListener('focusout', onFocusOut);
+		};
+	});
+
+	// Toggle .is-active on sub-anchors based on activeLine. .md-block uses
+	// Svelte's `class:is-active`, but .md-sub elements live inside {@html}
+	// and need imperative class management.
+	$effect(() => {
+		const article = articleEl;
+		if (!article) return;
+		const al = activeLine;
+		const subs = article.querySelectorAll<HTMLElement>('.md-sub[data-md-line]');
+		for (const el of subs) {
+			const line = Number(el.dataset.mdLine);
+			if (typeof al === 'number' && line === al) {
+				el.classList.add('is-active');
+			} else {
+				el.classList.remove('is-active');
+			}
+		}
+	});
+
 	function openComposer(line: number | null) {
 		composer = { line, parent: null, replyToHandle: null };
 		composerBody = '';
 		composerError = null;
-		// On mobile, expand the inline thread so the composer is visible.
+		// On mobile, expand the inline thread so the composer is visible. Sub-
+		// anchor composers (e.g., on a specific list item) expand the parent
+		// block — expandedLines is keyed by block start line.
 		if (!isRail && line != null) {
+			const blockLine = subToBlock.get(line) ?? line;
 			const next = new Set(expandedLines);
-			next.add(line);
+			next.add(blockLine);
 			expandedLines = next;
 		}
 		// CommentEditor autofocuses itself on mount; openComposer always
@@ -399,8 +497,9 @@
 		composerBody = '';
 		composerError = null;
 		if (!isRail && target.value.line != null) {
+			const blockLine = subToBlock.get(target.value.line) ?? target.value.line;
 			const next = new Set(expandedLines);
-			next.add(target.value.line);
+			next.add(blockLine);
 			expandedLines = next;
 		}
 	}
@@ -656,32 +755,37 @@
 				</nav>
 			</header>
 
-			<div class="prose">
+			<div class="prose" class:can-comment={auth.status === 'signed-in'}>
 				{#each renderedBlocks as block, i (i)}
-					{@const blockLineThreads =
-						groupedThreads.lineGroups.find(([l]) => l === block.line)?.[1] ?? []}
-					{@const blockCommentCount = blockLineThreads.reduce(
-						(acc, t) => acc + 1 + t.replies.length,
+					{@const blockAllLines = [block.line, ...block.subLines]}
+					{@const blockLineGroups = groupedThreads.lineGroups.filter(([l]) =>
+						blockAllLines.includes(l)
+					)}
+					{@const blockCommentCount = blockLineGroups.reduce(
+						(acc, [, threads]) =>
+							acc + threads.reduce((a, t) => a + 1 + t.replies.length, 0),
 						0
 					)}
+					{@const hasSubAnchors = block.subLines.length > 0}
 					{@const isActive = activeLine === block.line}
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					{@const composerInBlock =
+						composer != null &&
+						composer.line != null &&
+						blockAllLines.includes(composer.line) &&
+						composer.parent == null}
 					<div
 						class="md-block"
 						class:has-comments={blockCommentCount > 0}
-						class:is-active={isActive}
-						data-md-line={block.line}
-						onmouseenter={() => setActiveLine(block.line)}
-						onmouseleave={() => setActiveLine(null)}
-						onfocusin={() => setActiveLine(block.line)}
-						onfocusout={() => setActiveLine(null)}
+						class:has-sub-anchors={hasSubAnchors}
+						class:is-active={isActive && !hasSubAnchors}
+						data-md-line={hasSubAnchors ? null : block.line}
 					>
-						{#if blockCommentCount > 0 && isRail}
+						{#if blockCommentCount > 0 && isRail && !hasSubAnchors}
 							<span class="md-comment-count" aria-hidden="true">
 								[{blockCommentCount}]
 							</span>
 						{/if}
-						{#if auth.status === 'signed-in'}
+						{#if auth.status === 'signed-in' && !hasSubAnchors}
 							<button
 								type="button"
 								class="md-comment-btn"
@@ -706,17 +810,22 @@
 								</span>
 							</button>
 						{/if}
-						{#if !isRail && expandedLines.has(block.line) && blockLineThreads.length > 0}
+						{#if !isRail && expandedLines.has(block.line) && blockLineGroups.length > 0}
 							<div class="inline-thread">
-								{@render lineHeader(block.line, blockLineThreads[0].root)}
-								{#each blockLineThreads as thread (thread.root.uri)}
-									{@render threadInline(thread)}
+								{#each blockLineGroups as [groupLine, threads] (groupLine)}
+									{@render lineHeader(groupLine, threads[0].root)}
+									{#each threads as thread (thread.root.uri)}
+										{@render threadInline(thread)}
+									{/each}
+									{#if composer && composer.line === groupLine && composer.parent == null}
+										{@render inlineComposer()}
+									{/if}
 								{/each}
-								{#if composer && composer.line === block.line && composer.parent == null}
+								{#if composerInBlock && !blockLineGroups.some(([l]) => l === composer?.line)}
 									{@render inlineComposer()}
 								{/if}
 							</div>
-						{:else if !isRail && composer && composer.line === block.line && composer.parent == null}
+						{:else if !isRail && composerInBlock}
 							<div class="inline-thread">
 								{@render inlineComposer()}
 							</div>
@@ -1680,6 +1789,90 @@
 		top: 1.4em;
 	}
 
+	/* --- Sub-anchor affordances ---
+	   List items, table rows, and code-block lines are emitted by
+	   renderMarkdownBlocks with `.md-sub` + `[data-md-line]`. Each carries an
+	   injected [+] button with the same hover-revealed gutter treatment as the
+	   block-level [+]. Authorization is gated via `.prose.can-comment`: when
+	   the viewer can't comment, every per-line [+] (sub-anchor or block) is
+	   hidden. The cross-highlight `.is-active` is toggled imperatively from
+	   the page effect (sub-anchors live inside {@html} and are out of Svelte's
+	   reactive scope). */
+
+	.prose :global(.md-sub) {
+		transition: background var(--dur-mid) var(--ease-out-quart);
+	}
+	.prose :global(li.md-sub),
+	.prose :global(.md-code-line) {
+		position: relative;
+	}
+	.prose :global(li.md-sub.is-active),
+	.prose :global(.md-code-line.is-active) {
+		background: color-mix(in oklch, var(--accent-fade) 60%, transparent);
+	}
+	.prose :global(tr.md-sub.is-active) {
+		background: color-mix(in oklch, var(--accent-fade) 60%, transparent);
+	}
+
+	.prose :global(.md-sub-btn) {
+		position: absolute;
+		left: -3rem;
+		top: 0.1em;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		color: var(--ink-3);
+		background: transparent;
+		border: 0;
+		padding: 0;
+		cursor: pointer;
+		opacity: 0;
+		transition:
+			opacity var(--dur-fast) var(--ease-out-quart),
+			color var(--dur-fast) var(--ease-out-quart);
+	}
+	.prose :global(.md-sub:hover > .md-sub-btn),
+	.prose :global(.md-sub-btn:focus-visible) {
+		opacity: 1;
+	}
+	/* Table cells host the [+] for their row — surface it on row hover too. */
+	.prose :global(tr.md-sub:hover .md-sub-btn) {
+		opacity: 1;
+	}
+	.prose :global(.md-sub-btn:hover) {
+		color: var(--accent);
+	}
+
+	/* Table-row [+]: lives inside the first cell because <tr> isn't a reliable
+	   containing block for absolute positioning. Push past the cell's left
+	   padding so the button lands in the gutter outside the table. */
+	.prose :global(tr.md-sub > td:first-child > .md-sub-btn),
+	.prose :global(tr.md-sub > th:first-child > .md-sub-btn) {
+		left: calc(-1 * var(--space-3) - 3rem);
+		top: 50%;
+		transform: translateY(-50%);
+	}
+
+	/* Code-block lines are <span class="md-sub md-code-line"> rendered inside
+	   <pre>. display:block makes each one its own row; whitespace inside <pre>
+	   already preserves the leading indentation in the text content. The [+]
+	   sits outside the <pre>'s left padding so it lands in the article gutter
+	   alongside the block-level [+]. */
+	.prose :global(.md-code-line) {
+		display: block;
+	}
+	.prose :global(.md-code-line > .md-sub-btn) {
+		left: calc(-1 * var(--space-4) - 3rem);
+	}
+
+	/* When the viewer isn't signed in, hide every per-line affordance — both
+	   the block-level button (already conditionally rendered by Svelte) and
+	   every injected sub-anchor button. Belt-and-braces; the click handler
+	   also no-ops when signed out. */
+	.prose:not(.can-comment) :global(.md-sub-btn) {
+		display: none;
+	}
+
 	.prose-sm {
 		font-size: var(--text-sm);
 		line-height: var(--leading-snug);
@@ -1957,6 +2150,13 @@
 			display: inline-block;
 			margin-right: var(--space-2);
 			opacity: 0.5;
+		}
+		.prose :global(.md-sub-btn) {
+			position: static;
+			display: inline-block;
+			margin-right: var(--space-2);
+			opacity: 0.5;
+			transform: none;
 		}
 	}
 

@@ -58,7 +58,6 @@
 	<div class="shell-inner">
 		<a href="/" class="brand" aria-label="Requested home">
 			<span class="brand-mark">Requested</span>
-			<span class="brand-tag">Internet-Draft</span>
 		</a>
 		<nav class="shell-nav" aria-label="Account">
 			{#if auth.status === 'loading'}
@@ -129,12 +128,6 @@
 		font-weight: 700;
 		font-size: var(--text-md);
 		letter-spacing: var(--track-caps);
-	}
-	.brand-tag {
-		font-size: var(--text-2xs);
-		color: var(--ink-3);
-		letter-spacing: var(--track-caps);
-		text-transform: uppercase;
 	}
 	.brand:hover .brand-mark {
 		color: var(--accent);
@@ -226,9 +219,6 @@
 		}
 		.shell-user {
 			max-width: 10rem;
-		}
-		.brand-tag {
-			display: none;
 		}
 	}
 </style>
