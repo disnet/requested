@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
+	import Composer from '$lib/components/Composer.svelte';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { getDocument, saveNewVersion, type LoadedDocument } from '$lib/atproto/documents';
 
@@ -84,40 +84,28 @@
 		</span>
 	</div>
 
-	<form
-		class="composer"
-		onsubmit={(e) => {
-			e.preventDefault();
-			void save();
-		}}
+	<Composer
+		bind:body
+		{saving}
+		submitLabel={saving ? '[ saving… ]' : dirty ? '[ save new version ]' : '[ no changes ]'}
+		submitDisabled={saving || !dirty}
+		cancelHref={`/d/${page.params.did}/${page.params.rkey}`}
+		onsubmit={save}
 	>
-		<header class="doc-header">
-			<div class="doc-header-meta">
-				<span class="meta-key">Editing</span>
-				<span class="muted mono-tight">{loaded.rkey}</span>
-				{#if dirty}
-					<span class="dirty">* unsaved</span>
-				{/if}
-			</div>
-			<h1 class="doc-header-title">{loaded.value.title}</h1>
-			<p class="doc-header-hint muted">Title is fixed for this version. Edit the body below.</p>
-		</header>
-
-		<div class="editor-frame">
-			<div class="editor-rail">
-				<span class="rail-label">Body</span>
-				<span class="rail-hint muted">markdown · 72ch guide on the right</span>
-			</div>
-			<MarkdownEditor bind:value={body} />
-		</div>
-
-		<div class="actions">
-			<a href={`/d/${page.params.did}/${page.params.rkey}`} class="action">[ cancel ]</a>
-			<button type="submit" class="bracket-btn bracket-btn-primary" disabled={saving || !dirty}>
-				{saving ? '[ saving… ]' : dirty ? '[ save new version ]' : '[ no changes ]'}
-			</button>
-		</div>
-	</form>
+		{#snippet header()}
+			<header class="doc-header">
+				<div class="doc-header-meta">
+					<span class="meta-key">Editing</span>
+					<span class="muted mono-tight">{loaded!.rkey}</span>
+					{#if dirty}
+						<span class="dirty">* unsaved</span>
+					{/if}
+				</div>
+				<h1 class="doc-header-title">{loaded!.value.title}</h1>
+				<p class="doc-header-hint muted">Title is fixed for this version. Edit the body below.</p>
+			</header>
+		{/snippet}
+	</Composer>
 {/if}
 
 <style>
@@ -139,75 +127,42 @@
 		color: var(--ink-3);
 	}
 
-	.composer {
-		max-width: var(--col-wide);
-		margin: 0 auto;
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-5);
-	}
-
-	.doc-header {
+	:global(.doc-header) {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
 		padding-bottom: var(--space-4);
 		border-bottom: var(--border-thin) solid var(--rule);
 	}
-	.doc-header-meta {
+	:global(.doc-header-meta) {
 		display: flex;
 		gap: var(--space-3);
 		align-items: baseline;
 		font-size: var(--text-xs);
 	}
-	.meta-key {
+	:global(.meta-key) {
 		text-transform: uppercase;
 		letter-spacing: var(--track-caps);
 		color: var(--ink-3);
 	}
-	.mono-tight {
+	:global(.mono-tight) {
 		font-size: var(--text-xs);
 		color: var(--ink-3);
 		letter-spacing: var(--track-tight);
 	}
-	.dirty {
+	:global(.dirty) {
 		color: var(--accent);
 		font-weight: 500;
 	}
-	.doc-header-title {
+	:global(.doc-header-title) {
 		font-size: var(--text-2xl);
 		font-weight: 700;
 		letter-spacing: var(--track-tight);
 		line-height: var(--leading-tight);
 		margin: 0;
 	}
-	.doc-header-hint {
+	:global(.doc-header-hint) {
 		margin: 0;
 		font-size: var(--text-sm);
-	}
-
-	.editor-frame {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-	.editor-rail {
-		display: flex;
-		justify-content: space-between;
-		align-items: baseline;
-		font-size: var(--text-2xs);
-		text-transform: uppercase;
-		letter-spacing: var(--track-caps);
-		color: var(--ink-3);
-	}
-	.rail-label {
-		color: var(--ink-2);
-	}
-
-	.actions {
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		gap: var(--space-4);
 	}
 </style>

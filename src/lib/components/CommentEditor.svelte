@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import { EditorView, minimalSetup } from 'codemirror';
-	import { EditorState, Prec } from '@codemirror/state';
+	import { EditorState, Prec, Compartment } from '@codemirror/state';
 	import { keymap, placeholder as placeholderExt } from '@codemirror/view';
 	import { markdown } from '@codemirror/lang-markdown';
+	import { theme } from '$lib/theme.svelte';
 
 	let {
 		value = $bindable(''),
@@ -22,6 +23,44 @@
 	let container: HTMLDivElement;
 	let view: EditorView | null = null;
 	let suppressOutput = false;
+	const themeCompartment = new Compartment();
+
+	function isDark(): boolean {
+		if (theme.pref === 'dark') return true;
+		if (theme.pref === 'light') return false;
+		return window.matchMedia('(prefers-color-scheme: dark)').matches;
+	}
+
+	function cmTheme(dark: boolean) {
+		return EditorView.theme(
+			{
+				'&': {
+					backgroundColor: 'var(--surface)',
+					color: 'var(--ink)',
+					fontFamily: 'var(--font-mono)',
+					fontSize: 'var(--text-base)',
+					lineHeight: 'var(--leading-body)'
+				},
+				'.cm-content': {
+					caretColor: 'var(--accent)',
+					padding: 'var(--space-3)'
+				},
+				'.cm-cursor, .cm-dropCursor': {
+					borderLeftColor: 'var(--accent)',
+					borderLeftWidth: '2px'
+				},
+				'&.cm-focused .cm-selectionBackground, ::selection': {
+					backgroundColor: 'var(--selection-bg)',
+					color: 'var(--selection-fg)'
+				},
+				'.cm-placeholder': {
+					color: 'var(--ink-4)',
+					fontStyle: 'normal'
+				}
+			},
+			{ dark }
+		);
+	}
 
 	onMount(() => {
 		view = new EditorView({
@@ -55,33 +94,7 @@
 							}
 						])
 					),
-					EditorView.theme(
-						{
-							'&': {
-								backgroundColor: 'var(--surface)',
-								color: 'var(--ink)',
-								fontFamily: 'var(--font-mono)',
-								fontSize: 'var(--text-base)',
-								lineHeight: 'var(--leading-body)'
-							},
-							'.cm-content': {
-								caretColor: 'var(--accent)',
-								padding: 'var(--space-3)'
-							},
-							'.cm-cursor, .cm-dropCursor': {
-								borderLeftColor: 'var(--accent)',
-								borderLeftWidth: '2px'
-							},
-							'&.cm-focused .cm-selectionBackground, ::selection': {
-								backgroundColor: 'var(--selection-bg)'
-							},
-							'.cm-placeholder': {
-								color: 'var(--ink-4)',
-								fontStyle: 'normal'
-							}
-						},
-						{ dark: false }
-					),
+					themeCompartment.of(cmTheme(isDark())),
 					EditorView.updateListener.of((update) => {
 						if (update.docChanged && !suppressOutput) {
 							value = update.state.doc.toString();
@@ -100,6 +113,20 @@
 		suppressOutput = true;
 		view.dispatch({ changes: { from: 0, to: current.length, insert: value } });
 		suppressOutput = false;
+	});
+
+	// Reconfigure CodeMirror theme when app theme or system preference changes.
+	$effect(() => {
+		if (!view) return;
+		// Track theme.pref reactively
+		void theme.pref;
+		const mq = window.matchMedia('(prefers-color-scheme: dark)');
+		function sync() {
+			view?.dispatch({ effects: themeCompartment.reconfigure(cmTheme(isDark())) });
+		}
+		sync();
+		mq.addEventListener('change', sync);
+		return () => mq.removeEventListener('change', sync);
 	});
 
 	onDestroy(() => {
