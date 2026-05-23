@@ -1018,7 +1018,7 @@
 				{new Date(c.value.createdAt).toLocaleString()}
 			</time>
 			{#if state && state.kind !== 'current'}
-				<span class="status status-superseded">on earlier version</span>
+				<span class="stale-note">on earlier version</span>
 			{/if}
 		</div>
 		<div class="comment-body prose prose-sm">
@@ -1033,8 +1033,7 @@
 	{@const shift = state?.kind === 'line-stale' ? state.shift : null}
 	<header class="rail-card-head">
 		{#if item.kind === 'doc'}
-			<span class="rail-tag rail-tag-doc">DOC</span>
-			<span class="rail-card-label">on the whole document</span>
+			<span class="rail-doc-label">On the whole document</span>
 		{:else if shift?.kind === 'shifted'}
 			<code class="rail-line-excerpt" title={shift.text || '(empty line)'}>
 				{shift.text || '(empty line)'}
@@ -1187,10 +1186,10 @@
 			<time datetime={c.value.createdAt} class="rail-comment-time">
 				{formatRelative(c.value.createdAt)}
 			</time>
+			{#if state && state.kind !== 'current'}
+				<span class="stale-note">on earlier version</span>
+			{/if}
 		</div>
-		{#if state && state.kind !== 'current'}
-			<span class="status status-superseded rail-comment-stale">on earlier version</span>
-		{/if}
 		<div class="rail-comment-body prose prose-sm">
 			{@html renderMarkdown(c.value.body)}
 		</div>
@@ -1310,33 +1309,17 @@
 	}
 	.rail-card-head {
 		display: flex;
-		align-items: center;
+		align-items: baseline;
 		flex-wrap: wrap;
 		gap: var(--space-2);
 		row-gap: 4px;
-		margin-bottom: var(--space-2);
+		margin-bottom: var(--space-3);
 	}
-	.rail-tag {
-		display: inline-block;
-		font-size: var(--text-2xs);
-		font-weight: 500;
-		letter-spacing: var(--track-caps);
-		text-transform: uppercase;
-		padding: 1px var(--space-2);
-		border: var(--border-thin) solid var(--accent);
-		color: var(--accent);
-		min-width: 4ch;
-		text-align: center;
-	}
-	.rail-tag-doc {
-		border-color: var(--ink-3);
+	.rail-doc-label {
+		font-style: italic;
+		font-size: var(--text-xs);
 		color: var(--ink-3);
-	}
-	.rail-card-label {
-		font-size: var(--text-2xs);
-		letter-spacing: var(--track-caps);
-		text-transform: uppercase;
-		color: var(--ink-3);
+		letter-spacing: 0;
 	}
 	.rail-line-excerpt {
 		flex: 1 1 6ch;
@@ -1344,10 +1327,9 @@
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
 		line-height: var(--leading-snug);
-		color: var(--ink);
+		color: var(--ink-2);
 		background: var(--surface-sunken);
 		padding: 1px 6px;
-		border: var(--border-thin) solid var(--rule);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -1381,11 +1363,11 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
-		justify-content: space-between;
 		gap: var(--space-2);
 		margin-bottom: var(--space-2);
 		font-size: var(--text-2xs);
 		color: var(--ink-3);
+		letter-spacing: 0;
 	}
 	.rail-comment-handle {
 		color: var(--ink-2);
@@ -1393,13 +1375,25 @@
 	.rail-comment-time {
 		color: var(--ink-3);
 	}
-	.rail-comment-stale {
-		margin-bottom: var(--space-2);
+	/* Inline italic note replacing the bordered "ON EARLIER VERSION" pill.
+	   The body is what should signal a comment's content; drift status is a
+	   small footnote on the meta line, not a competing block element. */
+	.stale-note {
+		font-style: italic;
+		color: var(--warn);
+		font-size: var(--text-2xs);
+		letter-spacing: 0;
+	}
+	.rail-comment-meta .stale-note::before {
+		content: '· ';
+		color: var(--ink-4);
+		font-style: normal;
 	}
 	.rail-comment-body {
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		line-height: var(--leading-snug);
 		color: var(--ink);
+		font-weight: 500;
 	}
 	.rail-comment-body :global(p) {
 		margin-bottom: var(--space-2);
@@ -1900,13 +1894,15 @@
 	}
 
 	.comment {
-		margin-bottom: var(--space-3);
-		padding: var(--space-3) var(--space-4);
-		border: var(--border-thin) solid var(--rule);
-		background: var(--surface);
+		padding: var(--space-3) 0;
 	}
-	.comment:last-child {
-		margin-bottom: 0;
+	.comment + .comment {
+		border-top: var(--border-thin) solid var(--rule);
+	}
+	.comment-meta .stale-note::before {
+		content: '· ';
+		color: var(--ink-4);
+		font-style: normal;
 	}
 	.comment-meta {
 		display: flex;
@@ -2016,6 +2012,29 @@
 	:global(.bracket-btn.bracket-btn-sm) {
 		font-size: var(--text-xs);
 		padding: 2px var(--space-2);
+	}
+
+	/* Inside a comment card the bracketed glyphs already carry structure —
+	   the surrounding card border is the only chrome the row needs. Drop the
+	   button border + padding so [ reply ] / [ resolve ] read as quiet
+	   actions instead of stacking another box inside one. */
+	.rail-card :global(.bracket-btn-sm),
+	.inline-thread :global(.bracket-btn-sm),
+	.doc-comments :global(.comment-actions .bracket-btn-sm),
+	.doc-comments :global(.resolved-actions .bracket-btn-sm) {
+		border: 0;
+		padding: 0;
+		color: var(--ink-3);
+		background: transparent;
+		letter-spacing: 0;
+	}
+	.rail-card :global(.bracket-btn-sm:hover),
+	.inline-thread :global(.bracket-btn-sm:hover),
+	.doc-comments :global(.comment-actions .bracket-btn-sm:hover),
+	.doc-comments :global(.resolved-actions .bracket-btn-sm:hover) {
+		color: var(--accent);
+		background: transparent;
+		border: 0;
 	}
 	.inline-error {
 		font-size: var(--text-xs);
