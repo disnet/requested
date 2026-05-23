@@ -2409,26 +2409,54 @@
 		.meta-actions {
 			justify-content: flex-start;
 		}
-		.prose :global(.md-comment-btn) {
-			position: static;
-			display: inline-block;
-			margin-right: var(--space-2);
-			opacity: 0.5;
-		}
-		.prose :global(.md-sub-btn) {
-			position: static;
-			display: inline-block;
-			margin-right: var(--space-2);
-			opacity: 0.5;
-			transform: none;
+		/* Block-level affordances on mobile: position absolutely at the top of
+		   the block so they don't add a line-box (which on desktop the negative
+		   gutter avoids by hover-hiding). .md-block gets a small padding-top to
+		   (a) reserve room for the buttons and (b) break margin-collapse — without
+		   padding/border, h2's --space-7 margin-top would collapse straight
+		   through the empty .md-block, leaving buttons stranded far above the
+		   heading. h2/h3/h4 margin-top is also tightened on mobile since the
+		   padding-top now provides the section-break breathing room. */
+		.prose :global(.md-block) {
+			padding-top: 1.4em;
 		}
 		.prose :global(.md-link-btn),
+		.prose :global(.md-comment-btn) {
+			position: absolute;
+			top: 0;
+			line-height: 1;
+			width: auto;
+			opacity: 0.5;
+			margin: 0;
+			transform: none;
+		}
+		.prose :global(.md-link-btn) {
+			left: 0;
+		}
+		.prose :global(.md-comment-btn) {
+			left: 1.5em;
+		}
+		.prose :global(h2),
+		.prose :global(h3),
+		.prose :global(h4) {
+			margin-top: var(--space-4);
+		}
+		.prose :global(.md-sub-btn),
 		.prose :global(.md-sub-link) {
-			position: static;
-			display: inline-block;
-			margin-right: var(--space-2);
+			line-height: 1;
 			opacity: 0.5;
 			transform: none;
+		}
+		/* Table-row sub-anchors: desktop offsets them into the negative gutter
+		   (left: calc(-1 * var(--space-3) - 3rem)), which is off-screen on mobile
+		   since there's no left margin. Pull them inside the first cell instead. */
+		.prose :global(tr.md-sub > td:first-child > .md-sub-btn),
+		.prose :global(tr.md-sub > th:first-child > .md-sub-btn) {
+			left: 1.5em;
+		}
+		.prose :global(tr.md-sub > td:first-child > .md-sub-link),
+		.prose :global(tr.md-sub > th:first-child > .md-sub-link) {
+			left: 0;
 		}
 		/* List items and code lines wrap text and live inside their own line
 		   element, so the inline static placement above puts [+]/¶ on the same
@@ -2442,7 +2470,7 @@
 		   inside the line's own padding, so the line needs to be the CB. */
 		.prose :global(li.md-sub),
 		.prose :global(.md-code-line) {
-			padding-top: 1.6em;
+			padding-top: 1.2em;
 		}
 		.prose :global(.md-code-line) {
 			position: relative;
@@ -2461,7 +2489,7 @@
 		}
 		.prose :global(li.md-sub > .md-sub-btn),
 		.prose :global(.md-code-line > .md-sub-btn) {
-			left: 1.6em;
+			left: 1.3em;
 		}
 	}
 
