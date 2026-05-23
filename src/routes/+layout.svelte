@@ -3,6 +3,7 @@
 	import { resolve } from '$app/paths';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { theme } from '$lib/theme.svelte';
+	import { getCachedInbox, INBOX_CHANGED_EVENT } from '$lib/inbox-cache';
 	import '$lib/styles/fonts.css';
 	import '$lib/styles/tokens.css';
 	import '$lib/styles/base.css';
@@ -12,10 +13,66 @@
 	let signOutConfirm = $state(false);
 	let confirmTimer: ReturnType<typeof setTimeout> | null = null;
 
+	// Cache-only read — never triggers a Constellation fan-out from layout.
+	// The home page is the producer; the badge here is a passive consumer.
+	let inboxUnread = $state(0);
+	let badgeTick = $state(0);
+
+	function readBadgeCount() {
+		if (!auth.did) {
+			inboxUnread = 0;
+			return;
+		}
+		const cached = getCachedInbox(auth.did);
+		inboxUnread = cached?.totalUnread ?? 0;
+	}
+
+	$effect(() => {
+		// Re-read whenever sign-in state changes or badgeTick fires.
+		void badgeTick;
+		void auth.did;
+		readBadgeCount();
+	});
+
 	onMount(() => {
 		theme.init();
 		void auth.init();
+
+		// Tab-local: home page writes to sessionStorage; layout polls cheaply.
+		// Polling beats subscribing to a custom event because sessionStorage
+		// doesn't dispatch `storage` events to the same tab that wrote it.
+		const id = setInterval(() => {
+			badgeTick = badgeTick + 1;
+		}, 4000);
+
+		// Cross-tab: localStorage `dismissed-comments` change in another tab
+		// means counts elsewhere are stale; force a re-read on next tick.
+		const onStorage = (e: StorageEvent) => {
+			if (e.key === 'requested.dismissed-comments.v1' || e.key === 'requested.inbox-cache.v1') {
+				badgeTick = badgeTick + 1;
+			}
+		};
+		window.addEventListener('storage', onStorage);
+
+		// Same-tab: `storage` events don't fire in the writing tab, so the inbox
+		// cache helper dispatches this custom event after every write. Without
+		// this, dismissing from the home page would lag the badge by up to 4s.
+		const onInboxChanged = () => {
+			badgeTick = badgeTick + 1;
+		};
+		window.addEventListener(INBOX_CHANGED_EVENT, onInboxChanged);
+
+		return () => {
+			clearInterval(id);
+			window.removeEventListener('storage', onStorage);
+			window.removeEventListener(INBOX_CHANGED_EVENT, onInboxChanged);
+		};
 	});
+
+	function badgeLabel(n: number): string {
+		if (n >= 100) return '99+';
+		return String(n);
+	}
 
 	function onSignOut() {
 		if (!signOutConfirm) {
@@ -64,6 +121,19 @@
 			{#if auth.status === 'loading'}
 				<span class="muted shell-dots" aria-label="loading">···</span>
 			{:else if auth.status === 'signed-in'}
+				{#if inboxUnread > 0}
+					<a
+						href="{resolve('/')}#inbox"
+						class="action shell-inbox"
+						aria-label="{inboxUnread} unread comment{inboxUnread === 1 ? '' : 's'}"
+						title="{inboxUnread} unread comment{inboxUnread === 1 ? '' : 's'}"
+					>
+						<span class="shell-inbox-bracket" aria-hidden="true">[</span>
+						<span class="shell-inbox-dot" aria-hidden="true"></span>
+						<span class="shell-inbox-count">{badgeLabel(inboxUnread)}</span>
+						<span class="shell-inbox-bracket" aria-hidden="true">]</span>
+					</a>
+				{/if}
 				<a
 					href={resolve('/new')}
 					class="action shell-new"
@@ -159,6 +229,36 @@
 	}
 	.shell-new {
 		white-space: nowrap;
+	}
+	.shell-inbox {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35ch;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+		color: var(--ink-2);
+		transition: color var(--dur-fast) var(--ease-out-quart);
+	}
+	.shell-inbox:hover,
+	.shell-inbox:focus-visible {
+		color: var(--accent);
+	}
+	.shell-inbox-bracket {
+		color: var(--ink-3);
+	}
+	.shell-inbox:hover .shell-inbox-bracket {
+		color: var(--accent);
+	}
+	.shell-inbox-dot {
+		display: inline-block;
+		width: 0.45em;
+		height: 0.45em;
+		background: var(--accent);
+		border-radius: 50%;
+		margin-right: 0.25ch;
+	}
+	.shell-inbox-count {
+		font-weight: 500;
 	}
 	.shell-label-compact {
 		display: none;

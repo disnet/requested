@@ -1,9 +1,15 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { onMount, tick } from 'svelte';
+	import { fade } from 'svelte/transition';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { listMyDocuments, type DocumentSummary } from '$lib/atproto/documents';
 	import { searchActorsTypeahead, type Profile } from '$lib/atproto/profile';
 	import { loadActivity, type ActivityEntry } from '$lib/activity';
+	import { loadInbox, type InboxResult } from '$lib/inbox';
+	import { getCachedInbox, setCachedInbox, updateCachedInbox, formatAge } from '$lib/inbox-cache';
+	import { dismissComment, dismissComments } from '$lib/dismissed-comments';
 
 	let handle = $state('');
 	let submitting = $state(false);
@@ -16,6 +22,15 @@
 	// `[]` means "loaded, nothing here" and the section hides entirely.
 	let activity = $state<ActivityEntry[] | null>(null);
 	let activityError = $state<string | null>(null);
+
+	// Inbox: unread, non-dismissed comments grouped by document. Cache-first so
+	// returning to / shows last-known state immediately; a stale cache also
+	// keeps refreshing in the background.
+	let inbox = $state<InboxResult | null>(null);
+	let inboxLoading = $state(false);
+	let inboxError = $state<string | null>(null);
+	let inboxAgeTick = $state(0); // re-renders the "as of" stamp every minute
+	const expanded = new SvelteSet<string>();
 
 	let suggestions = $state<Profile[]>([]);
 	let activeIndex = $state(-1);
@@ -107,6 +122,10 @@
 			docsError = null;
 			activity = null;
 			activityError = null;
+			inbox = null;
+			inboxError = null;
+			inboxLoading = false;
+			expanded.clear();
 			return;
 		}
 		void (async () => {
@@ -130,6 +149,110 @@
 				activity = [];
 			}
 		})();
+		// Inbox: paint from cache instantly when present so the section doesn't
+		// flash empty on every visit. Always fetch fresh in the background.
+		const cached = getCachedInbox(did);
+		if (cached) inbox = cached;
+		void refreshInbox(agent, did, { background: cached != null });
+	});
+
+	async function refreshInbox(
+		agent: NonNullable<typeof auth.agent>,
+		did: string,
+		opts: { background?: boolean } = {}
+	) {
+		if (!opts.background) {
+			inboxLoading = true;
+			inboxError = null;
+		}
+		try {
+			const result = await loadInbox(agent, did);
+			inbox = result;
+			setCachedInbox(did, result);
+			inboxError = null;
+		} catch (err) {
+			if (!opts.background) {
+				inboxError = err instanceof Error ? err.message : String(err);
+			}
+		} finally {
+			inboxLoading = false;
+		}
+	}
+
+	function onRefreshInbox() {
+		const agent = auth.agent;
+		const did = auth.did;
+		if (!agent || !did) return;
+		void refreshInbox(agent, did);
+	}
+
+	function toggleExpanded(docUri: string) {
+		if (expanded.has(docUri)) expanded.delete(docUri);
+		else expanded.add(docUri);
+	}
+
+	function onDismissComment(commentUri: string, docUri: string) {
+		const did = auth.did;
+		if (!did) return;
+		dismissComment(commentUri, did);
+		const next = updateCachedInbox(did, (r) => removeCommentFromInbox(r, commentUri, docUri));
+		if (next) inbox = next;
+	}
+
+	function onDismissGroup(docUri: string) {
+		const did = auth.did;
+		if (!did) return;
+		const group = inbox?.groups.find((g) => g.docUri === docUri);
+		if (!group) return;
+		dismissComments(
+			group.comments.map((c) => c.uri),
+			did
+		);
+		const next = updateCachedInbox(did, (r) => removeGroupFromInbox(r, docUri));
+		if (next) inbox = next;
+		expanded.delete(docUri);
+	}
+
+	function removeCommentFromInbox(r: InboxResult, commentUri: string, docUri: string): InboxResult {
+		const groups = r.groups
+			.map((g) => {
+				if (g.docUri !== docUri) return g;
+				const comments = g.comments.filter((c) => c.uri !== commentUri);
+				if (comments.length === 0) return null;
+				return { ...g, comments, mostRecentAt: comments[0].createdAt };
+			})
+			.filter((g): g is NonNullable<typeof g> => g !== null);
+		const totalUnread = groups.reduce((sum, g) => sum + g.comments.length, 0);
+		return { ...r, groups, totalUnread };
+	}
+
+	function removeGroupFromInbox(r: InboxResult, docUri: string): InboxResult {
+		const groups = r.groups.filter((g) => g.docUri !== docUri);
+		const totalUnread = groups.reduce((sum, g) => sum + g.comments.length, 0);
+		return { ...r, groups, totalUnread };
+	}
+
+	// Bump the age stamp once a minute so "just now" → "1 min ago" → "2 min ago"
+	// without needing a render trigger. Cheap; ages are derived from inboxAgeTick.
+	onMount(() => {
+		const id = setInterval(() => {
+			inboxAgeTick = inboxAgeTick + 1;
+		}, 60_000);
+		return () => clearInterval(id);
+	});
+
+	// Scroll to the inbox anchor when the user lands with #inbox in the URL.
+	onMount(async () => {
+		if (typeof window === 'undefined') return;
+		if (window.location.hash !== '#inbox') return;
+		await tick();
+		document.getElementById('inbox')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	});
+
+	const inboxStamp = $derived.by(() => {
+		// Read inboxAgeTick so this re-computes on the interval.
+		void inboxAgeTick;
+		return inbox ? formatAge(inbox.loadedAt) : '';
 	});
 
 	const authorDid = $derived(auth.did ?? '');
@@ -150,6 +273,38 @@
 		const day = String(d.getUTCDate()).padStart(2, '0');
 		return `${y}-${m}-${day}`;
 	}
+
+	// Newer comments show relative time so a "2h ago" comment doesn't read as
+	// "today's date" with no useful precision. Older drops to ISO date for
+	// parity with the rest of the page.
+	function formatCommentTime(iso: string): string {
+		void inboxAgeTick;
+		const ms = Date.now() - Date.parse(iso);
+		if (Number.isNaN(ms)) return formatDate(iso);
+		const mins = Math.round(ms / 60_000);
+		if (mins < 1) return 'just now';
+		if (mins < 60) return `${mins} min ago`;
+		const hours = Math.round(mins / 60);
+		if (hours < 24) return `${hours} h ago`;
+		return formatDate(iso);
+	}
+
+	function unreadLabel(n: number): string {
+		if (n >= 100) return '99+ new';
+		return `${n} new`;
+	}
+
+	// Brief specifies fade-out, not layout animation. Honor prefers-reduced-motion
+	// by collapsing the fade to 0ms so the row removal is instant.
+	const reducedMotion = $derived.by(() => {
+		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+		return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	});
+
+	// Cap each expanded group at this many comments to keep the panel from
+	// getting unwieldy on a popular doc. Older comments are reachable by opening
+	// the document.
+	const GROUP_VISIBLE_CAP = 50;
 </script>
 
 {#if auth.status === 'loading'}
@@ -284,6 +439,147 @@
 					</li>
 				{/each}
 			</ol>
+		{/if}
+
+		{#if inbox && inbox.groups.length > 0}
+			<section id="inbox" class="subsection subsection-inbox" aria-label="Inbox">
+				<header class="subsection-head">
+					<h2 class="subsection-title">Inbox</h2>
+					<div class="inbox-meta">
+						<span class="muted inbox-stamp" aria-live="polite">
+							{inboxLoading ? 'refreshing…' : `as of ${inboxStamp}`}
+						</span>
+						<button
+							type="button"
+							class="action inbox-refresh"
+							onclick={onRefreshInbox}
+							disabled={inboxLoading}
+							aria-label="Refresh inbox"
+						>
+							[ refresh ]
+						</button>
+					</div>
+				</header>
+				<ol class="ledger ledger-inbox" aria-label="Unread comments by document">
+					{#each inbox.groups as group (group.docUri)}
+						{@const isOpen = expanded.has(group.docUri)}
+						{@const uniqueCommenters = new Set(group.comments.map((c) => c.commenterHandle))}
+						{@const recentCommenter = group.comments[0].commenterHandle}
+						{@const moreCount = uniqueCommenters.size - 1}
+						{@const visible = group.comments.slice(0, GROUP_VISIBLE_CAP)}
+						{@const hidden = group.comments.length - visible.length}
+						<li class="ledger-row ledger-row-inbox" class:open={isOpen}>
+							<button
+								type="button"
+								class="ledger-link ledger-link-inbox"
+								onclick={() => toggleExpanded(group.docUri)}
+								aria-expanded={isOpen}
+								aria-controls="inbox-group-{group.docUri}"
+							>
+								<span class="ledger-tag ledger-tag-new" aria-hidden="true">
+									<span class="dot" aria-hidden="true"></span>{unreadLabel(group.comments.length)}
+								</span>
+								<span class="sr-only">{group.comments.length} unread comments</span>
+								<span class="ledger-title">{group.docTitle}</span>
+								<span class="ledger-byline">
+									from @{recentCommenter}{#if moreCount > 0}
+										<span class="ledger-more"> + {moreCount} more</span>
+									{/if}
+								</span>
+								<span class="ledger-dots" aria-hidden="true"></span>
+								<time class="ledger-date" datetime={group.mostRecentAt}>
+									{formatCommentTime(group.mostRecentAt)}
+								</time>
+								<span class="ledger-caret" aria-hidden="true">{isOpen ? '−' : '+'}</span>
+							</button>
+							{#if isOpen}
+								<div id="inbox-group-{group.docUri}" class="inbox-panel">
+									<ol class="inbox-comments">
+										{#each visible as c (c.uri)}
+											<li
+												class="inbox-comment"
+												transition:fade={{ duration: reducedMotion ? 0 : 160 }}
+											>
+												<a
+													class="inbox-comment-link"
+													href={resolve('/d/[did]/[rkey]', {
+														did: group.docDid,
+														rkey: group.docRkey
+													})}
+												>
+													<span class="inbox-commenter">@{c.commenterHandle}</span>
+													{#if c.line != null}
+														<span class="inbox-line">L{c.line}</span>
+													{/if}
+													<span class="inbox-snippet">{c.snippet || '(empty comment)'}</span>
+													<span class="ledger-dots inbox-dots" aria-hidden="true"></span>
+													<time class="inbox-time" datetime={c.createdAt}>
+														{formatCommentTime(c.createdAt)}
+													</time>
+												</a>
+												<button
+													type="button"
+													class="action inbox-dismiss"
+													onclick={() => onDismissComment(c.uri, group.docUri)}
+													aria-label="Dismiss comment from @{c.commenterHandle}"
+												>
+													[ dismiss ]
+												</button>
+											</li>
+										{/each}
+									</ol>
+									{#if hidden > 0}
+										<p class="inbox-hidden-note muted">
+											{hidden} older {hidden === 1 ? 'comment' : 'comments'} hidden — open the document
+											to see all.
+										</p>
+									{/if}
+									<div class="inbox-panel-foot">
+										<a
+											class="action inbox-open"
+											href={resolve('/d/[did]/[rkey]', {
+												did: group.docDid,
+												rkey: group.docRkey
+											})}
+										>
+											[ open&nbsp;document ]
+										</a>
+										<button
+											type="button"
+											class="action inbox-dismiss-all"
+											onclick={() => onDismissGroup(group.docUri)}
+										>
+											[ dismiss&nbsp;all ]
+										</button>
+									</div>
+								</div>
+							{/if}
+						</li>
+					{/each}
+				</ol>
+			</section>
+		{:else if inboxLoading && !inbox}
+			<section class="subsection subsection-inbox" aria-label="Inbox">
+				<header class="subsection-head">
+					<h2 class="subsection-title">Inbox</h2>
+				</header>
+				<p class="muted activity-loading">Checking for new comments…</p>
+			</section>
+		{:else if inboxError && !inbox}
+			<section class="subsection subsection-inbox" aria-label="Inbox">
+				<header class="subsection-head">
+					<h2 class="subsection-title">Inbox</h2>
+					<button
+						type="button"
+						class="action inbox-refresh"
+						onclick={onRefreshInbox}
+						aria-label="Retry"
+					>
+						[ retry ]
+					</button>
+				</header>
+				<p class="error">Couldn't reach Constellation.</p>
+			</section>
 		{/if}
 
 		{#if activity === null}
@@ -584,6 +880,204 @@
 		white-space: nowrap;
 	}
 
+	/* ---------- Inbox ---------- */
+	.subsection-inbox {
+		margin-top: var(--space-7);
+	}
+	.subsection-inbox .subsection-head {
+		gap: var(--space-4);
+	}
+	.inbox-meta {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--space-3);
+		font-size: var(--text-xs);
+	}
+	.inbox-stamp {
+		font-size: var(--text-xs);
+		font-variant-numeric: tabular-nums;
+	}
+	.inbox-refresh {
+		font-size: var(--text-xs);
+		white-space: nowrap;
+	}
+	.inbox-refresh[disabled] {
+		opacity: 0.5;
+		cursor: progress;
+	}
+
+	.ledger-inbox .ledger-row-inbox {
+		display: block;
+	}
+	.ledger-link-inbox {
+		display: grid;
+		grid-template-columns: auto 1fr auto auto auto auto;
+		align-items: baseline;
+		gap: var(--space-3);
+		padding: var(--space-4) var(--space-2);
+		width: 100%;
+		background: none;
+		border: 0;
+		text-align: left;
+		font: inherit;
+		color: var(--ink);
+		cursor: pointer;
+		transition: background var(--dur-fast) var(--ease-out-quart);
+	}
+	.ledger-link-inbox:hover {
+		background: var(--surface-raised);
+	}
+	.ledger-link-inbox:hover .ledger-tag-new {
+		color: var(--accent);
+	}
+	.ledger-tag-new {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4ch;
+		font-size: var(--text-2xs);
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-2);
+		min-width: 8ch;
+		transition: color var(--dur-fast) var(--ease-out-quart);
+	}
+	.ledger-tag-new .dot {
+		display: inline-block;
+		width: 0.45em;
+		height: 0.45em;
+		background: var(--accent);
+		border-radius: 50%;
+		transform: translateY(-0.15em);
+	}
+	.ledger-caret {
+		display: inline-block;
+		width: 1.25rem;
+		text-align: center;
+		font-size: var(--text-base);
+		color: var(--ink-3);
+		font-variant-numeric: tabular-nums;
+	}
+	.ledger-link-inbox:hover .ledger-caret {
+		color: var(--accent);
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	.inbox-panel {
+		padding: var(--space-2) var(--space-2) var(--space-4);
+		border-top: var(--border-thin) dashed var(--rule);
+		background: var(--surface-sunken);
+	}
+	.inbox-comments {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+	.inbox-comment {
+		display: grid;
+		grid-template-columns: 1fr auto;
+		align-items: baseline;
+		gap: var(--space-3);
+		padding: var(--space-2) var(--space-2);
+		border-bottom: var(--border-thin) dotted var(--rule);
+	}
+	.inbox-comment:last-child {
+		border-bottom: none;
+	}
+	.inbox-comment-link {
+		display: grid;
+		grid-template-columns: auto auto 1fr auto auto;
+		align-items: baseline;
+		gap: var(--space-3);
+		text-decoration: none;
+		color: var(--ink);
+		min-width: 0;
+	}
+	.inbox-comment-link:hover .inbox-commenter {
+		color: var(--accent);
+	}
+	.inbox-commenter {
+		font-size: var(--text-sm);
+		color: var(--ink-2);
+		font-weight: 500;
+		white-space: nowrap;
+		transition: color var(--dur-fast) var(--ease-out-quart);
+	}
+	.inbox-line {
+		font-size: var(--text-2xs);
+		text-transform: uppercase;
+		letter-spacing: var(--track-caps);
+		color: var(--ink-3);
+		padding: 0.1em 0.5ch;
+		border: var(--border-thin) solid var(--rule);
+		font-variant-numeric: tabular-nums;
+	}
+	.inbox-snippet {
+		font-size: var(--text-sm);
+		color: var(--ink-2);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+	.inbox-dots {
+		min-width: 1ch;
+	}
+	.inbox-time {
+		font-size: var(--text-xs);
+		color: var(--ink-3);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.inbox-dismiss {
+		font-size: var(--text-xs);
+		color: var(--ink-3);
+		opacity: 0;
+		transition:
+			color var(--dur-fast) var(--ease-out-quart),
+			opacity var(--dur-fast) var(--ease-out-quart);
+	}
+	.inbox-comment:hover .inbox-dismiss,
+	.inbox-dismiss:focus-visible {
+		opacity: 1;
+	}
+	.inbox-dismiss:hover {
+		color: var(--accent);
+	}
+	.ledger-more {
+		color: var(--ink-4);
+	}
+	.inbox-hidden-note {
+		font-size: var(--text-xs);
+		padding: var(--space-2) var(--space-2) 0;
+		font-style: italic;
+	}
+	.inbox-panel-foot {
+		display: flex;
+		justify-content: space-between;
+		gap: var(--space-3);
+		padding: var(--space-3) var(--space-2) 0;
+		margin-top: var(--space-2);
+		border-top: var(--border-thin) dotted var(--rule);
+		font-size: var(--text-xs);
+	}
+	.inbox-open,
+	.inbox-dismiss-all {
+		font-size: var(--text-xs);
+	}
+	.inbox-open:hover {
+		color: var(--accent);
+	}
+
 	@media (max-width: 640px) {
 		.docs-header {
 			flex-direction: column;
@@ -622,6 +1116,68 @@
 		.ledger-byline {
 			grid-area: byline;
 			max-width: none;
+		}
+		.ledger-link-inbox {
+			grid-template-columns: auto 1fr auto;
+			grid-template-areas:
+				'tag date caret'
+				'title title title'
+				'byline byline byline';
+			row-gap: var(--space-1);
+		}
+		.ledger-link-inbox .ledger-tag-new {
+			grid-area: tag;
+		}
+		.ledger-link-inbox .ledger-title {
+			grid-area: title;
+			white-space: normal;
+		}
+		.ledger-link-inbox .ledger-byline {
+			grid-area: byline;
+			max-width: none;
+		}
+		.ledger-link-inbox .ledger-date {
+			grid-area: date;
+			text-align: right;
+		}
+		.ledger-link-inbox .ledger-caret {
+			grid-area: caret;
+		}
+		.ledger-link-inbox .ledger-dots {
+			display: none;
+		}
+		.inbox-comment {
+			grid-template-columns: 1fr;
+			gap: var(--space-1);
+		}
+		.inbox-comment-link {
+			grid-template-columns: auto auto;
+			grid-template-areas:
+				'commenter line'
+				'snippet snippet'
+				'time time';
+			gap: var(--space-1) var(--space-2);
+		}
+		.inbox-commenter {
+			grid-area: commenter;
+		}
+		.inbox-line {
+			grid-area: line;
+			justify-self: start;
+		}
+		.inbox-snippet {
+			grid-area: snippet;
+			white-space: normal;
+		}
+		.inbox-time {
+			grid-area: time;
+		}
+		.inbox-dots {
+			display: none;
+		}
+		.inbox-dismiss {
+			opacity: 1;
+			justify-self: end;
 		}
 	}
 </style>
