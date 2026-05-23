@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { resolve } from '$app/paths';
 	import { diffLines, type Change } from 'diff';
 	import {
 		getDocument,
@@ -84,7 +85,18 @@
 		return { added, removed };
 	});
 
-	const docPath = $derived(`/d/${page.params.did}/${page.params.rkey}`);
+	const docPath = $derived(
+		resolve('/d/[did]/[rkey]', {
+			did: page.params.did as string,
+			rkey: page.params.rkey as string
+		})
+	);
+	const historyPath = $derived(
+		resolve('/d/[did]/[rkey]/history', {
+			did: page.params.did as string,
+			rkey: page.params.rkey as string
+		})
+	);
 
 	function formatDate(iso: string): string {
 		const d = new Date(iso);
@@ -147,7 +159,7 @@
 				{/if}
 			</div>
 			<nav class="page-actions">
-				<a class="action" href={`${docPath}/history`}>[ all versions ]</a>
+				<a class="action" href={historyPath}>[ all versions ]</a>
 			</nav>
 		</header>
 

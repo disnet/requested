@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
+	import { resolve } from '$app/paths';
+	import type { Agent } from '@atproto/api';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { getDocument, listVersionChain, type LoadedDocument } from '$lib/atproto/documents';
 	import {
@@ -30,18 +33,18 @@
 	let versionCount = $state<number | null>(null);
 
 	let comments = $state<LoadedComment[]>([]);
-	let commentStates = $state<Map<string, CommentVersionState>>(new Map());
-	let commenterProfiles = $state<Map<string, Profile>>(new Map());
+	const commentStates = new SvelteMap<string, CommentVersionState>();
+	const commenterProfiles = new SvelteMap<string, Profile>();
 	let commentsError = $state<string | null>(null);
 
 	let resolutions = $state<LoadedResolution[]>([]);
 
 	// Root URIs whose resolved thread is currently expanded in-view. Resolved
 	// threads collapse to a one-line summary by default and toggle open here.
-	let expandedResolved = $state<Set<string>>(new Set());
+	const expandedResolved = new SvelteSet<string>();
 
-	let resolveBusy = $state<Set<string>>(new Set());
-	let resolveError = $state<Map<string, string>>(new Map());
+	const resolveBusy = new SvelteSet<string>();
+	const resolveError = new SvelteMap<string, string>();
 
 	// `composer` is null when closed. `line` is the source-line being commented
 	// on (or null for a whole-document comment). `parent` is set when replying
@@ -65,7 +68,7 @@
 
 	// Mobile fallback: which line threads are expanded inline. The doc-level
 	// section is always expanded on mobile, so it doesn't need a flag.
-	let expandedLines = $state<Set<number>>(new Set());
+	const expandedLines = new SvelteSet<number>();
 
 	// Cross-highlight: which line is currently being hovered or focused in
 	// either the body or the rail. `null` for the doc-level group.
@@ -97,17 +100,17 @@
 		error = null;
 		versionCount = null;
 		comments = [];
-		commentStates = new Map();
-		commenterProfiles = new Map();
+		commentStates.clear();
+		commenterProfiles.clear();
 		commentsError = null;
 		resolutions = [];
-		expandedResolved = new Set();
-		resolveBusy = new Set();
-		resolveError = new Map();
+		expandedResolved.clear();
+		resolveBusy.clear();
+		resolveError.clear();
 		composer = null;
 		composerBody = '';
 		composerError = null;
-		expandedLines = new Set();
+		expandedLines.clear();
 		activeLine = null;
 		linkedLine = null;
 		didInitialHashScroll = false;
@@ -137,11 +140,7 @@
 		void loadComments(doc, agent, myDid);
 	});
 
-	async function loadComments(
-		doc: LoadedDocument,
-		agent: ReturnType<typeof getAgent>,
-		myDid: string | null
-	) {
+	async function loadComments(doc: LoadedDocument, agent: Agent | null, myDid: string | null) {
 		commentsError = null;
 		try {
 			const [list, res] = await Promise.all([
@@ -158,7 +157,7 @@
 					if (commenterProfiles.has(did)) return;
 					try {
 						const p = await fetchProfile(did);
-						commenterProfiles = new Map(commenterProfiles).set(did, p);
+						commenterProfiles.set(did, p);
 					} catch {
 						// Profile lookup is display-only; falling back to the DID is fine.
 					}
@@ -176,15 +175,12 @@
 						async (c) => [c.uri, await describeCommentVersionState(c.value, current)] as const
 					)
 				);
-				commentStates = new Map(entries);
+				commentStates.clear();
+				for (const [uri, state] of entries) commentStates.set(uri, state);
 			}
 		} catch (err) {
 			commentsError = err instanceof Error ? err.message : String(err);
 		}
-	}
-
-	function getAgent() {
-		return auth.agent;
 	}
 
 	onMount(() => {
@@ -194,7 +190,7 @@
 			isRail = e.matches;
 			// Re-collapse mobile threads when crossing back over the breakpoint,
 			// since the rail cards take over the role on desktop.
-			if (e.matches) expandedLines = new Set();
+			if (e.matches) expandedLines.clear();
 		};
 		mq.addEventListener('change', onChange);
 		return () => mq.removeEventListener('change', onChange);
@@ -210,7 +206,7 @@
 	// list item line 7 expands the parent block on mobile and so cross-
 	// highlights know which block frames a given sub-anchor.
 	const subToBlock = $derived.by(() => {
-		const map = new Map<number, number>();
+		const map = new SvelteMap<number, number>();
 		for (const b of renderedBlocks) {
 			map.set(b.line, b.line);
 			for (const sl of b.subLines) map.set(sl, b.line);
@@ -225,6 +221,15 @@
 	const updatedAt = $derived(loaded?.version?.value.createdAt ?? null);
 	const docCoords = $derived(loaded ? `${loaded.rkey}` : '');
 
+	const routeDid = $derived(page.params.did as string);
+	const routeRkey = $derived(page.params.rkey as string);
+	const authorProfilePath = $derived(resolve('/d/[did]', { did: routeDid }));
+	const historyPath = $derived(
+		resolve('/d/[did]/[rkey]/history', { did: routeDid, rkey: routeRkey })
+	);
+	const diffPath = $derived(resolve('/d/[did]/[rkey]/diff', { did: routeDid, rkey: routeRkey }));
+	const editPath = $derived(resolve('/d/[did]/[rkey]/edit', { did: routeDid, rkey: routeRkey }));
+
 	// Fold the flat comment list into threads (root + flat replies), then
 	// partition by anchor. The doc-level bucket holds threads whose root has no
 	// `line`; line groups are keyed by the root's line. Replies inherit the
@@ -234,7 +239,7 @@
 
 	const groupedThreads = $derived.by(() => {
 		const docLevel: Thread[] = [];
-		const byLine = new Map<number, Thread[]>();
+		const byLine = new SvelteMap<number, Thread[]>();
 		for (const t of allThreads) {
 			const line = t.root.value.line;
 			if (line == null) {
@@ -255,7 +260,7 @@
 	// any other DID are silently ignored.
 	const documentAuthorDid = $derived(loaded?.did ?? null);
 	const resolutionByRoot = $derived.by(() => {
-		const out = new Map<string, LoadedResolution>();
+		const out = new SvelteMap<string, LoadedResolution>();
 		if (!documentAuthorDid) return out;
 		for (const t of allThreads) {
 			const r = authoritativeResolution(resolutions, t.root, documentAuthorDid);
@@ -268,7 +273,7 @@
 	// user personally wrote for each root — required for the unresolve action
 	// since you can only delete records from your own repo.
 	const myResolutionByRoot = $derived.by(() => {
-		const out = new Map<string, LoadedResolution>();
+		const out = new SvelteMap<string, LoadedResolution>();
 		const myDid = auth.did;
 		if (!myDid) return out;
 		for (const t of allThreads) {
@@ -307,7 +312,7 @@
 			});
 		}
 
-		const lineKeys = new Set<number>();
+		const lineKeys = new SvelteSet<number>();
 		for (const [line, group] of groupedThreads.lineGroups) {
 			lineKeys.add(line);
 			items.push({ kind: 'line', key: `L${line}`, line, threads: group });
@@ -553,9 +558,7 @@
 		// block — expandedLines is keyed by block start line.
 		if (!isRail && line != null) {
 			const blockLine = subToBlock.get(line) ?? line;
-			const next = new Set(expandedLines);
-			next.add(blockLine);
-			expandedLines = next;
+			expandedLines.add(blockLine);
 		}
 		// CommentEditor autofocuses itself on mount; openComposer always
 		// remounts the editor (different snippet site / unmounts on previous
@@ -573,9 +576,7 @@
 		composerError = null;
 		if (!isRail && target.value.line != null) {
 			const blockLine = subToBlock.get(target.value.line) ?? target.value.line;
-			const next = new Set(expandedLines);
-			next.add(blockLine);
-			expandedLines = next;
+			expandedLines.add(blockLine);
 		}
 	}
 
@@ -586,10 +587,8 @@
 	}
 
 	function toggleResolvedExpand(rootUri: string) {
-		const next = new Set(expandedResolved);
-		if (next.has(rootUri)) next.delete(rootUri);
-		else next.add(rootUri);
-		expandedResolved = next;
+		if (expandedResolved.has(rootUri)) expandedResolved.delete(rootUri);
+		else expandedResolved.add(rootUri);
 	}
 
 	async function resolveThread(thread: Thread) {
@@ -600,22 +599,16 @@
 		if (!canResolve(thread)) return;
 		const rootUri = thread.root.uri;
 		if (resolveBusy.has(rootUri)) return;
-		resolveBusy = new Set(resolveBusy).add(rootUri);
-		const nextErr = new Map(resolveError);
-		nextErr.delete(rootUri);
-		resolveError = nextErr;
+		resolveBusy.add(rootUri);
+		resolveError.delete(rootUri);
 		try {
 			await createResolution(agent, myDid, { uri: thread.root.uri, cid: thread.root.cid }, doc.uri);
 			await loadComments(doc, agent, myDid);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			const m = new Map(resolveError);
-			m.set(rootUri, msg);
-			resolveError = m;
+			resolveError.set(rootUri, msg);
 		} finally {
-			const b = new Set(resolveBusy);
-			b.delete(rootUri);
-			resolveBusy = b;
+			resolveBusy.delete(rootUri);
 		}
 	}
 
@@ -628,35 +621,25 @@
 		if (!mine) return; // you can only delete your own record
 		const rootUri = thread.root.uri;
 		if (resolveBusy.has(rootUri)) return;
-		resolveBusy = new Set(resolveBusy).add(rootUri);
-		const nextErr = new Map(resolveError);
-		nextErr.delete(rootUri);
-		resolveError = nextErr;
+		resolveBusy.add(rootUri);
+		resolveError.delete(rootUri);
 		try {
 			await deleteResolution(agent, myDid, mine.rkey);
 			// Collapse the "expanded resolved" state for this thread on success,
 			// so the next render shows the now-open thread normally.
-			const ex = new Set(expandedResolved);
-			ex.delete(rootUri);
-			expandedResolved = ex;
+			expandedResolved.delete(rootUri);
 			await loadComments(doc, agent, myDid);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			const m = new Map(resolveError);
-			m.set(rootUri, msg);
-			resolveError = m;
+			resolveError.set(rootUri, msg);
 		} finally {
-			const b = new Set(resolveBusy);
-			b.delete(rootUri);
-			resolveBusy = b;
+			resolveBusy.delete(rootUri);
 		}
 	}
 
 	function toggleLine(line: number) {
-		const next = new Set(expandedLines);
-		if (next.has(line)) next.delete(line);
-		else next.add(line);
-		expandedLines = next;
+		if (expandedLines.has(line)) expandedLines.delete(line);
+		else expandedLines.add(line);
 	}
 
 	function setActiveLine(line: number | null | 'doc') {
@@ -838,7 +821,7 @@
 									{#if author?.avatar}
 										<img class="meta-avatar" src={author.avatar} alt="" />
 									{/if}
-									<a href={`/d/${page.params.did}`} class="author-link">{authorHandle}</a>
+									<a href={authorProfilePath} class="author-link">{authorHandle}</a>
 								</span>
 								<span class="meta-author-did mono-tight">{authorDid}</span>
 							</span>
@@ -861,12 +844,10 @@
 				<h1 class="doc-title">{loaded.value.title}</h1>
 
 				<nav class="meta-actions" aria-label="Document actions">
-					<a class="action" href={`/d/${page.params.did}/${page.params.rkey}/history`}>
-						[ history ]
-					</a>
-					<a class="action" href={`/d/${page.params.did}/${page.params.rkey}/diff`}>[ diff ]</a>
+					<a class="action" href={historyPath}>[ history ]</a>
+					<a class="action" href={diffPath}>[ diff ]</a>
 					{#if isOwner}
-						<a class="action" href={`/d/${page.params.did}/${page.params.rkey}/edit`}> [ edit ] </a>
+						<a class="action" href={editPath}> [ edit ] </a>
 					{/if}
 				</nav>
 			</header>
@@ -924,6 +905,7 @@
 								[+]
 							</button>
 						{/if}
+						<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
 						{@html block.html}
 						{#if blockCommentCount > 0 && !isRail}
 							<button
@@ -1255,6 +1237,7 @@
 			{/if}
 		</div>
 		<div class="comment-body prose prose-sm">
+			<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
 			{@html renderMarkdown(c.value.body)}
 		</div>
 	</article>
@@ -1424,6 +1407,7 @@
 			{/if}
 		</div>
 		<div class="rail-comment-body prose prose-sm">
+			<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
 			{@html renderMarkdown(c.value.body)}
 		</div>
 	</div>

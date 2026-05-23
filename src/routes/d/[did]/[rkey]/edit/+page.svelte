@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { resolve } from '$app/paths';
 	import Composer from '$lib/components/Composer.svelte';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { getDocument, saveNewVersion, type LoadedDocument } from '$lib/atproto/documents';
@@ -44,7 +45,12 @@
 		error = null;
 		try {
 			await saveNewVersion(agent, did, loaded, body);
-			await goto(`/d/${page.params.did}/${page.params.rkey}`);
+			await goto(
+				resolve('/d/[did]/[rkey]', {
+					did: page.params.did as string,
+					rkey: page.params.rkey as string
+				})
+			);
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 			saving = false;
@@ -86,10 +92,12 @@
 
 	<Composer
 		bind:body
-		{saving}
 		submitLabel={saving ? '[ saving… ]' : dirty ? '[ save new version ]' : '[ no changes ]'}
 		submitDisabled={saving || !dirty}
-		cancelHref={`/d/${page.params.did}/${page.params.rkey}`}
+		cancelHref={resolve('/d/[did]/[rkey]', {
+			did: page.params.did as string,
+			rkey: page.params.rkey as string
+		})}
 		onsubmit={save}
 	>
 		{#snippet header()}

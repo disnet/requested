@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import Composer from '$lib/components/Composer.svelte';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { createDocument } from '$lib/atproto/documents';
@@ -26,7 +27,7 @@
 		error = null;
 		try {
 			const { docRkey } = await createDocument(agent, did, title.trim(), body);
-			await goto(`/d/${did}/${docRkey}`);
+			await goto(resolve('/d/[did]/[rkey]', { did, rkey: docRkey }));
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 			saving = false;
@@ -43,7 +44,7 @@
 {#if auth.status !== 'signed-in'}
 	<div class="column">
 		<p class="muted">
-			You need to be signed in to create a document. <a href="/">Go back</a> and sign in.
+			You need to be signed in to create a document. <a href={resolve('/')}>Go back</a> and sign in.
 		</p>
 	</div>
 {:else}
@@ -56,11 +57,9 @@
 
 	<Composer
 		bind:body
-		{saving}
 		{error}
 		submitLabel={saving ? '[ publishing… ]' : '[ publish ]'}
 		submitDisabled={saving || !title.trim()}
-		cancelHref="/"
 		onsubmit={publish}
 	>
 		{#snippet header()}

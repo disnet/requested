@@ -1,23 +1,23 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { resolve } from '$app/paths';
+	import type { ResolvedPathname } from '$app/types';
 	import MarkdownEditor from './MarkdownEditor.svelte';
 
 	let {
 		body = $bindable(''),
-		saving = false,
 		error = null as string | null,
 		submitLabel = '',
 		submitDisabled = false,
-		cancelHref = '/',
+		cancelHref = resolve('/'),
 		onsubmit = () => {},
-		header,
+		header
 	}: {
 		body: string;
-		saving?: boolean;
 		error?: string | null;
 		submitLabel?: string;
 		submitDisabled?: boolean;
-		cancelHref?: string;
+		cancelHref?: ResolvedPathname;
 		onsubmit?: () => void;
 		header: Snippet;
 	} = $props();

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { listMyDocuments, type DocumentSummary } from '$lib/atproto/documents';
 
@@ -124,7 +125,7 @@
 					Documents published to <code>{auth.profile?.handle ?? auth.did}</code>
 				</p>
 			</div>
-			<a class="bracket-btn bracket-btn-primary" href="/new">[ new&nbsp;document ]</a>
+			<a class="bracket-btn bracket-btn-primary" href={resolve('/new')}>[ new&nbsp;document ]</a>
 		</header>
 
 		{#if docs === null}
@@ -134,13 +135,16 @@
 		{:else if docs.length === 0}
 			<div class="docs-empty">
 				<p class="muted">No documents yet on this PDS.</p>
-				<a href="/new" class="action">→ Write your first RFC.</a>
+				<a href={resolve('/new')} class="action">→ Write your first RFC.</a>
 			</div>
 		{:else}
 			<ol class="ledger" aria-label="Your documents">
 				{#each docs as doc, i (doc.uri)}
 					<li class="ledger-row">
-						<a class="ledger-link" href={`/d/${authorDid}/${doc.rkey}`}>
+						<a
+							class="ledger-link"
+							href={resolve('/d/[did]/[rkey]', { did: authorDid, rkey: doc.rkey })}
+						>
 							<span class="ledger-num">{rfcNumber(i, docs.length)}</span>
 							<span class="ledger-title">{doc.value.title}</span>
 							<span class="ledger-dots" aria-hidden="true"></span>

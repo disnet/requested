@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { resolve } from '$app/paths';
+	import type { ResolvedPathname } from '$app/types';
 	import {
 		getDocument,
 		listVersionChain,
@@ -30,7 +32,12 @@
 		})();
 	});
 
-	const docPath = $derived(`/d/${page.params.did}/${page.params.rkey}`);
+	const did = $derived(page.params.did as string);
+	const rkey = $derived(page.params.rkey as string);
+	const docPath = $derived(resolve('/d/[did]/[rkey]', { did, rkey }));
+	const versionPath = (vrkey: string) => resolve('/d/[did]/[rkey]/v/[vrkey]', { did, rkey, vrkey });
+	const diffPath = (fromRkey: string, toRkey: string) =>
+		`${resolve('/d/[did]/[rkey]/diff', { did, rkey })}?from=${fromRkey}&to=${toRkey}` as ResolvedPathname;
 
 	function formatDate(iso: string): string {
 		const d = new Date(iso);
@@ -95,15 +102,15 @@
 								{#if isCurrent}
 									<a class="action" href={docPath}>[ view ]</a>
 								{:else}
-									<a class="action" href={`${docPath}/v/${v.rkey}`}>[ view ]</a>
+									<a class="action" href={versionPath(v.rkey)}>[ view ]</a>
 								{/if}
 								{#if !isCurrent}
-									<a class="action" href={`${docPath}/diff?from=${v.rkey}&to=${versions[0].rkey}`}>
+									<a class="action" href={diffPath(v.rkey, versions[0].rkey)}>
 										[ diff&nbsp;vs&nbsp;current ]
 									</a>
 								{/if}
 								{#if prev}
-									<a class="action" href={`${docPath}/diff?from=${prev.rkey}&to=${v.rkey}`}>
+									<a class="action" href={diffPath(prev.rkey, v.rkey)}>
 										[ diff&nbsp;vs&nbsp;previous ]
 									</a>
 								{/if}

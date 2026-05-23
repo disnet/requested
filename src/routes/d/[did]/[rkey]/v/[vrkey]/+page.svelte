@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { resolve } from '$app/paths';
+	import type { ResolvedPathname } from '$app/types';
 	import {
 		getDocument,
 		getVersion,
@@ -50,7 +52,11 @@
 		})();
 	});
 
-	const docPath = $derived(`/d/${page.params.did}/${page.params.rkey}`);
+	const did = $derived(page.params.did as string);
+	const rkey = $derived(page.params.rkey as string);
+	const docPath = $derived(resolve('/d/[did]/[rkey]', { did, rkey }));
+	const historyPath = $derived(resolve('/d/[did]/[rkey]/history', { did, rkey }));
+	const diffBasePath = $derived(resolve('/d/[did]/[rkey]/diff', { did, rkey }));
 	const isCurrent = $derived(
 		loaded?.version != null && version != null && loaded.version.cid === version.cid
 	);
@@ -96,11 +102,14 @@
 			<span class="version-banner-actions">
 				<a class="action" href={docPath}>[ jump to current ]</a>
 				{#if currentVersionRkey}
-					<a class="action" href={`${docPath}/diff?from=${version.rkey}&to=${currentVersionRkey}`}>
+					<a
+						class="action"
+						href={`${diffBasePath}?from=${version.rkey}&to=${currentVersionRkey}` as ResolvedPathname}
+					>
 						[ diff vs current ]
 					</a>
 				{/if}
-				<a class="action" href={`${docPath}/history`}>[ all versions ]</a>
+				<a class="action" href={historyPath}>[ all versions ]</a>
 			</span>
 		</aside>
 	{/if}
@@ -159,12 +168,13 @@
 			<h1 class="doc-title">{loaded.value.title}</h1>
 
 			<nav class="meta-actions">
-				<a class="action" href={`${docPath}/history`}>[ history ]</a>
-				<a class="action" href={`${docPath}/diff`}>[ diff ]</a>
+				<a class="action" href={historyPath}>[ history ]</a>
+				<a class="action" href={diffBasePath}>[ diff ]</a>
 			</nav>
 		</header>
 
 		<div class="prose">
+			<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
 			{@html renderedHtml}
 		</div>
 	</article>

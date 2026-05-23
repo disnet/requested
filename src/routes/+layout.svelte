@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { resolve } from '$app/paths';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import '$lib/styles/fonts.css';
@@ -56,14 +57,19 @@
 
 <header class="shell">
 	<div class="shell-inner">
-		<a href="/" class="brand" aria-label="Requested home">
+		<a href={resolve('/')} class="brand" aria-label="Requested home">
 			<span class="brand-mark">Requested</span>
 		</a>
 		<nav class="shell-nav" aria-label="Account">
 			{#if auth.status === 'loading'}
 				<span class="muted shell-dots" aria-label="loading">···</span>
 			{:else if auth.status === 'signed-in'}
-				<a href="/new" class="action shell-new" aria-label="New document" title="New document">
+				<a
+					href={resolve('/new')}
+					class="action shell-new"
+					aria-label="New document"
+					title="New document"
+				>
 					<span class="shell-label-full">[ new&nbsp;document ]</span>
 					<span class="shell-label-compact" aria-hidden="true">[ + ]</span>
 				</a>
