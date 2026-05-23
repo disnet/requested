@@ -297,30 +297,32 @@
 	}
 	.prose :global(h1) {
 		font-size: var(--text-2xl);
-		counter-reset: sub;
 		padding-bottom: var(--space-2);
 		border-bottom: var(--border-thin) solid var(--rule);
 	}
-	.prose :global(h1::before) {
+	/* `h2` is the top of the body outline — see matching note in the reader
+	   page CSS. */
+	.prose :global(h2) {
+		font-size: var(--text-xl);
+		counter-reset: sub;
+	}
+	.prose :global(h2::before) {
 		content: counter(section) '. ';
 		counter-increment: section;
 		color: var(--ink-3);
 		margin-right: 0.5ch;
 	}
-	.prose :global(h2) {
-		font-size: var(--text-xl);
+	.prose :global(h3) {
+		font-size: var(--text-lg);
 		counter-reset: subsub;
 	}
-	.prose :global(h2::before) {
+	.prose :global(h3::before) {
 		content: counter(section) '.' counter(sub) '. ';
 		counter-increment: sub;
 		color: var(--ink-3);
 		margin-right: 0.5ch;
 	}
-	.prose :global(h3) {
-		font-size: var(--text-lg);
-	}
-	.prose :global(h3::before) {
+	.prose :global(h4::before) {
 		content: counter(section) '.' counter(sub) '.' counter(subsub) '. ';
 		counter-increment: subsub;
 		color: var(--ink-3);

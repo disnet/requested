@@ -762,8 +762,7 @@
 						blockAllLines.includes(l)
 					)}
 					{@const blockCommentCount = blockLineGroups.reduce(
-						(acc, [, threads]) =>
-							acc + threads.reduce((a, t) => a + 1 + t.replies.length, 0),
+						(acc, [, threads]) => acc + threads.reduce((a, t) => a + 1 + t.replies.length, 0),
 						0
 					)}
 					{@const hasSubAnchors = block.subLines.length > 0}
@@ -1624,38 +1623,42 @@
 	}
 	.prose :global(h1) {
 		font-size: var(--text-2xl);
-		counter-reset: sub;
 		padding-bottom: var(--space-2);
 		border-bottom: var(--border-thin) solid var(--rule);
 	}
-	.prose :global(h1::before) {
+	/* `h2` is the top of the body outline — the doc title is rendered as an
+	   `<h1>` outside `.prose`, and `stripLeadingH1` removes the source `# Title`
+	   so prose typically starts at `##`. The counter scheme is shifted one
+	   level to match. */
+	.prose :global(h2) {
+		font-size: var(--text-xl);
+		counter-reset: sub;
+	}
+	.prose :global(h2::before) {
 		content: counter(section) '. ';
 		counter-increment: section;
 		color: var(--ink-3);
 		margin-right: 0.5ch;
 	}
-	.prose :global(h2) {
-		font-size: var(--text-xl);
-		counter-reset: subsub;
-	}
-	.prose :global(h2::before) {
-		content: counter(section) '.' counter(sub) '. ';
-		counter-increment: sub;
-		color: var(--ink-3);
-		margin-right: 0.5ch;
-	}
 	.prose :global(h3) {
 		font-size: var(--text-lg);
+		counter-reset: subsub;
 	}
 	.prose :global(h3::before) {
-		content: counter(section) '.' counter(sub) '.' counter(subsub) '. ';
-		counter-increment: subsub;
+		content: counter(section) '.' counter(sub) '. ';
+		counter-increment: sub;
 		color: var(--ink-3);
 		margin-right: 0.5ch;
 	}
 	.prose :global(h4) {
 		font-size: var(--text-md);
 		color: var(--ink-2);
+	}
+	.prose :global(h4::before) {
+		content: counter(section) '.' counter(sub) '.' counter(subsub) '. ';
+		counter-increment: subsub;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
 	}
 	.prose :global(p),
 	.prose :global(ul),
@@ -1958,7 +1961,7 @@
 		margin-left: 0;
 	}
 	/* The thread sits inside `.prose`, so `.prose :global(h3)` would otherwise
-	   bleed in: large/bold text plus a `0.0.1.`-style section counter from
+	   bleed in: large/bold text plus a `1.1.`-style section counter from
 	   `h3::before`. Override both here. */
 	.inline-thread .comment-anchor {
 		font-size: var(--text-sm);
