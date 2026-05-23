@@ -89,6 +89,19 @@ select {
 	color: inherit;
 }
 
+/* iOS Safari auto-zooms when a focused input's computed font-size is < 16px.
+   The project's --text-base is 15px, so bump text-entry surfaces (including the
+   CodeMirror content area, which inherits from .cm-editor) to 16px on touch
+   devices. Desktop typography is unaffected. */
+@media (pointer: coarse) {
+	input,
+	textarea,
+	select,
+	.cm-content {
+		font-size: 16px;
+	}
+}
+
 /* Strip default button chrome — components opt in to a button style */
 button {
 	background: transparent;

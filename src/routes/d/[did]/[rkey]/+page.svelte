@@ -1708,6 +1708,11 @@
 		font-size: var(--text-sm);
 		width: 100%;
 		max-width: 100ch;
+		/* Let the table scroll horizontally within its own box on narrow
+		   viewports instead of pushing the whole page sideways. `display: block`
+		   keeps the rendered table layout intact via anonymous table boxes. */
+		display: block;
+		overflow-x: auto;
 	}
 	.prose :global(th),
 	.prose :global(td) {

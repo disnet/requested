@@ -362,6 +362,13 @@
 		padding: 1px 4px;
 		border: var(--border-thin) solid var(--rule);
 	}
+	.prose :global(table) {
+		/* Keep wide tables from pushing the page sideways on mobile — they
+		   scroll horizontally inside their own box instead. */
+		display: block;
+		max-width: 100%;
+		overflow-x: auto;
+	}
 
 	@media (max-width: 720px) {
 		.meta-row {

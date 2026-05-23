@@ -63,8 +63,11 @@
 			{#if auth.status === 'loading'}
 				<span class="muted shell-dots" aria-label="loading">···</span>
 			{:else if auth.status === 'signed-in'}
-				<a href="/new" class="action shell-new">[ new&nbsp;document ]</a>
-				<span class="shell-user" title={auth.did ?? ''}>
+				<a href="/new" class="action shell-new" aria-label="New document" title="New document">
+					<span class="shell-label-full">[ new&nbsp;document ]</span>
+					<span class="shell-label-compact" aria-hidden="true">[ + ]</span>
+				</a>
+				<span class="shell-user" title={auth.profile?.handle ?? auth.did ?? ''}>
 					{#if auth.profile?.avatar}
 						<img class="shell-avatar" src={auth.profile.avatar} alt="" />
 					{:else}
@@ -72,8 +75,17 @@
 					{/if}
 					<span class="shell-handle">{auth.profile?.handle ?? auth.did ?? '…'}</span>
 				</span>
-				<button type="button" class="action shell-signout" onclick={onSignOut}>
-					{signOutConfirm ? '[ confirm? ]' : '[ sign out ]'}
+				<button
+					type="button"
+					class="action shell-signout"
+					onclick={onSignOut}
+					aria-label={signOutConfirm ? 'Confirm sign out' : 'Sign out'}
+					title={signOutConfirm ? 'Confirm sign out' : 'Sign out'}
+				>
+					<span class="shell-label-full">{signOutConfirm ? '[ confirm? ]' : '[ sign out ]'}</span>
+					<span class="shell-label-compact" aria-hidden="true"
+						>{signOutConfirm ? '[ ? ]' : '[ out ]'}</span
+					>
 				</button>
 			{:else}
 				<span class="muted">signed&nbsp;out</span>
@@ -141,6 +153,9 @@
 	}
 	.shell-new {
 		white-space: nowrap;
+	}
+	.shell-label-compact {
+		display: none;
 	}
 	.shell-user {
 		display: inline-flex;
@@ -210,15 +225,25 @@
 
 	@media (max-width: 640px) {
 		.shell-inner {
-			flex-wrap: wrap;
+			padding: var(--space-3) var(--space-4);
 			gap: var(--space-3);
+			flex-wrap: nowrap;
 		}
 		.shell-nav {
 			gap: var(--space-3);
-			flex-wrap: wrap;
+			flex-wrap: nowrap;
+		}
+		.shell-label-full {
+			display: none;
+		}
+		.shell-label-compact {
+			display: inline;
+		}
+		.shell-handle {
+			display: none;
 		}
 		.shell-user {
-			max-width: 10rem;
+			max-width: none;
 		}
 	}
 </style>
