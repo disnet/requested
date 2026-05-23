@@ -81,7 +81,7 @@
 			</div>
 		</div>
 
-		<h1 class="signin-title">AT-RFC</h1>
+		<h1 class="signin-title">Requested</h1>
 		<p class="signin-lead">
 			Publish markdown documents-of-record to your atproto PDS. Collect line-anchored, threaded
 			comments from anyone with an atproto identity. The artifact lives on your server, not ours.
@@ -110,8 +110,8 @@
 
 		<footer class="signin-foot">
 			<p class="muted">
-				AT-RFC uses atproto OAuth. You'll be redirected to your PDS to grant scoped access. AT-RFC
-				never sees your password.
+				Requested uses atproto OAuth. You'll be redirected to your PDS to grant scoped access.
+				Requested never sees your password.
 			</p>
 		</footer>
 	</section>

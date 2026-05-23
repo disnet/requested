@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-AT-RFC is a **pure browser SvelteKit app** for publishing markdown RFCs and threaded line-comments to atproto. There is no server runtime and no central database — every persistent record lives on the relevant user's own PDS.
+Requested is a **pure browser SvelteKit app** for publishing markdown RFCs and threaded line-comments to atproto. There is no server runtime and no central database — every persistent record lives on the relevant user's own PDS.
 
 ### Static SPA / no SSR
 
@@ -23,7 +23,7 @@ Svelte 5 **runes mode is forced** for all project files (`svelte.config.js`). Us
 
 ### atproto data model (`src/lib/atproto/`)
 
-Three NSIDs, all under `dev.disnet.atrfc.*`. The JSON lexicons in `/lexicons` are authoritative; `src/lib/atproto/lexicons.ts` mirrors them as TypeScript types and exports the NSID constants.
+Three NSIDs, all under `fyi.requested.*` (reverse domain of `requested.fyi`). The JSON lexicons in `/lexicons` are authoritative; `src/lib/atproto/lexicons.ts` mirrors them as TypeScript types and exports the NSID constants.
 
 - **`document`** — title + `currentVersion` strongRef. Mutable (pointer moves on every edit).
 - **`documentVersion`** — immutable body snapshot, chained via `previousVersion` strongRef. The split exists so comments can pin to an immutable CID while the document pointer keeps moving.

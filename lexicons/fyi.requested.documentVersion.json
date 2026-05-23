@@ -1,6 +1,6 @@
 {
 	"lexicon": 1,
-	"id": "dev.disnet.atrfc.documentVersion",
+	"id": "fyi.requested.documentVersion",
 	"defs": {
 		"main": {
 			"type": "record",
@@ -13,7 +13,7 @@
 					"document": {
 						"type": "string",
 						"format": "at-uri",
-						"description": "AT-URI of the dev.disnet.atrfc.document this version belongs to. Not a strongRef because the document record mutates over time (currentVersion changes on every edit) — pinning to a CID would always be stale."
+						"description": "AT-URI of the fyi.requested.document this version belongs to. Not a strongRef because the document record mutates over time (currentVersion changes on every edit) — pinning to a CID would always be stale."
 					},
 					"body": {
 						"type": "string",

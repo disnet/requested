@@ -1,6 +1,6 @@
 {
 	"lexicon": 1,
-	"id": "dev.disnet.atrfc.threadResolution",
+	"id": "fyi.requested.threadResolution",
 	"defs": {
 		"main": {
 			"type": "record",
@@ -13,12 +13,12 @@
 					"thread": {
 						"type": "ref",
 						"ref": "com.atproto.repo.strongRef",
-						"description": "Strong ref to the root dev.disnet.atrfc.comment of the thread being resolved. The 'root' is the comment in the thread with no `parent` field."
+						"description": "Strong ref to the root fyi.requested.comment of the thread being resolved. The 'root' is the comment in the thread with no `parent` field."
 					},
 					"document": {
 						"type": "string",
 						"format": "at-uri",
-						"description": "AT-URI of the dev.disnet.atrfc.document the thread belongs to. Stored alongside the thread ref so readers can list resolutions by document without first hydrating every comment."
+						"description": "AT-URI of the fyi.requested.document the thread belongs to. Stored alongside the thread ref so readers can list resolutions by document without first hydrating every comment."
 					},
 					"createdAt": {
 						"type": "string",

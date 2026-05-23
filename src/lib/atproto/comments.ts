@@ -82,7 +82,7 @@ export async function listMyCommentsOn(
 }
 
 // Lists all comments on a document across atproto, by asking Constellation for
-// every record in dev.disnet.atrfc.comment whose `document` field points at the
+// every record in fyi.requested.comment whose `document` field points at the
 // document's at-uri, then hydrating each one from its home PDS.
 //
 // Per-record failures (commenter's PDS down, record deleted between the index

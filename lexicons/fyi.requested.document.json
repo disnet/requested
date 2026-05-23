@@ -1,6 +1,6 @@
 {
 	"lexicon": 1,
-	"id": "dev.disnet.atrfc.document",
+	"id": "fyi.requested.document",
 	"defs": {
 		"main": {
 			"type": "record",
@@ -24,7 +24,7 @@
 					"currentVersion": {
 						"type": "ref",
 						"ref": "com.atproto.repo.strongRef",
-						"description": "Strong ref to the dev.disnet.atrfc.documentVersion record that represents the current head. Absent only transiently during initial creation, before the first version write completes."
+						"description": "Strong ref to the fyi.requested.documentVersion record that represents the current head. Absent only transiently during initial creation, before the first version write completes."
 					}
 				}
 			}

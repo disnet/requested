@@ -8,7 +8,7 @@ import { browser } from '$app/environment';
 
 export type ThemePref = 'light' | 'dark' | 'system';
 
-const STORAGE_KEY = 'atrfc:theme';
+const STORAGE_KEY = 'requested:theme';
 
 function readInitial(): ThemePref {
 	if (!browser) return 'system';

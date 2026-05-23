@@ -51,13 +51,13 @@
 </script>
 
 <svelte:head>
-	<title>AT-RFC</title>
+	<title>Requested</title>
 </svelte:head>
 
 <header class="shell">
 	<div class="shell-inner">
-		<a href="/" class="brand" aria-label="AT-RFC home">
-			<span class="brand-mark">AT-RFC</span>
+		<a href="/" class="brand" aria-label="Requested home">
+			<span class="brand-mark">Requested</span>
 			<span class="brand-tag">Internet-Draft</span>
 		</a>
 		<nav class="shell-nav" aria-label="Account">
@@ -98,7 +98,7 @@
 
 <footer class="shell-foot">
 	<div class="shell-foot-inner">
-		<span class="muted">AT-RFC · documents live on your atproto PDS · </span>
+		<span class="muted">Requested · documents live on your atproto PDS · </span>
 		<a href="https://github.com/disnet/at-rfc" target="_blank" rel="noopener">source</a>
 	</div>
 </footer>

@@ -9,7 +9,7 @@
 			// for users with a dark preference or stored 'dark' selection.
 			(function () {
 				try {
-					var pref = localStorage.getItem('atrfc:theme');
+					var pref = localStorage.getItem('requested:theme');
 					if (pref === 'light' || pref === 'dark') {
 						document.documentElement.setAttribute('data-theme', pref);
 					}

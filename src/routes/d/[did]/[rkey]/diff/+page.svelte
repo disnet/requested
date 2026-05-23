@@ -99,7 +99,7 @@
 
 <svelte:head>
 	{#if loaded?.value.title}
-		<title>Diff · {loaded.value.title} — AT-RFC</title>
+		<title>Diff · {loaded.value.title} — Requested</title>
 	{/if}
 </svelte:head>
 

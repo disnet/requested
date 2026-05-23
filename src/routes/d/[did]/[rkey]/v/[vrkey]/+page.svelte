@@ -74,7 +74,7 @@
 
 <svelte:head>
 	{#if loaded?.value.title}
-		<title>{loaded.value.title} (older version) — AT-RFC</title>
+		<title>{loaded.value.title} (older version) — Requested</title>
 	{/if}
 </svelte:head>
 

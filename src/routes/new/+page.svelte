@@ -37,7 +37,7 @@
 </script>
 
 <svelte:head>
-	<title>New document — AT-RFC</title>
+	<title>New document — Requested</title>
 </svelte:head>
 
 {#if auth.status !== 'signed-in'}
