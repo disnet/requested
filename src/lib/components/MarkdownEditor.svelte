@@ -123,10 +123,12 @@
 	.editor {
 		position: relative;
 	}
+	.editor :global(.cm-gutters) {
+		display: none;
+	}
 	.editor :global(.cm-editor) {
 		border: var(--border-thin) solid var(--rule-strong);
 		background: var(--surface);
-		min-height: 28rem;
 	}
 	.editor :global(.cm-editor.cm-focused) {
 		outline: var(--border-thick) solid var(--accent);
