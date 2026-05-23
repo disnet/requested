@@ -71,6 +71,20 @@
 	// either the body or the rail. `null` for the doc-level group.
 	let activeLine = $state<number | null | 'doc'>(null);
 
+	// Persistent line highlight from a `#L<n>` permalink — either the URL hash
+	// on first load or set when the user clicks a ¶ glyph. Independent from
+	// `activeLine` so hovering elsewhere doesn't clear it.
+	let linkedLine = $state<number | null>(null);
+
+	// Transient confirmation that surfaces when ¶ copies a permalink to the
+	// clipboard. Cleared on a short timer.
+	let flashMsg = $state<string | null>(null);
+	let flashTimer: number | null = null;
+
+	// One-shot guard so the initial `#L<n>` scroll fires exactly once per
+	// document load. Plain closure var — not reactive, doesn't drive effects.
+	let didInitialHashScroll = false;
+
 	// Refs used by the anchoring effect. These are $state so that bind:this
 	// triggers the anchoring effect once the elements are mounted.
 	let articleEl = $state<HTMLElement | undefined>(undefined);
@@ -95,6 +109,8 @@
 		composerError = null;
 		expandedLines = new Set();
 		activeLine = null;
+		linkedLine = null;
+		didInitialHashScroll = false;
 		void (async () => {
 			try {
 				const [doc, profile] = await Promise.all([
@@ -415,6 +431,30 @@
 		return () => article.removeEventListener('click', onClick);
 	});
 
+	// ¶ permalink glyphs (both block-level and sub-anchor) carry
+	// `data-md-link="<line>"` and an `href="#L<line>"`. Plain left-click is
+	// intercepted to update the hash silently, copy the full URL, and pin a
+	// highlight; modifier-clicks and middle-clicks fall through to the
+	// browser's standard link handling so users can open in a new tab.
+	$effect(() => {
+		const article = articleEl;
+		if (!article) return;
+		const onClick = (e: MouseEvent) => {
+			const target = e.target as HTMLElement | null;
+			const link = target?.closest<HTMLElement>('.md-link-btn');
+			if (!link) return;
+			if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+			const lineStr = link.dataset.mdLink;
+			if (lineStr == null) return;
+			const lineNum = Number(lineStr);
+			if (!Number.isFinite(lineNum)) return;
+			e.preventDefault();
+			void copyLineLink(lineNum);
+		};
+		article.addEventListener('click', onClick);
+		return () => article.removeEventListener('click', onClick);
+	});
+
 	// Pointer / focus delegation for the active-line cross-highlight. Walks
 	// up from the event target to the closest `[data-md-line]`; that resolves
 	// to a sub-anchor when inside one (e.g., a list item) and the surrounding
@@ -467,6 +507,41 @@
 				el.classList.remove('is-active');
 			}
 		}
+	});
+
+	// Mirror of the is-active effect for permalink highlights. Kept separate so
+	// the persistent `.is-linked` class doesn't toggle on every hover.
+	$effect(() => {
+		const article = articleEl;
+		if (!article) return;
+		const ll = linkedLine;
+		const subs = article.querySelectorAll<HTMLElement>('.md-sub[data-md-line]');
+		for (const el of subs) {
+			const line = Number(el.dataset.mdLine);
+			if (ll != null && line === ll) el.classList.add('is-linked');
+			else el.classList.remove('is-linked');
+		}
+	});
+
+	// First-paint hash handling: when the URL arrives with `#L<n>`, pin the
+	// highlight and scroll to the matching block once the body has actually
+	// rendered. Guarded so swapping documents (param change resets the flag)
+	// gets a fresh chance, but successive renders of the same document don't.
+	$effect(() => {
+		if (didInitialHashScroll) return;
+		const article = articleEl;
+		if (!article || !loaded?.version) return;
+		// `renderedBlocks` is what populates the DOM under articleEl — read it
+		// here so this effect re-runs once the blocks land.
+		if (renderedBlocks.length === 0) return;
+		didInitialHashScroll = true;
+		const match = window.location.hash.match(/^#L(\d+)$/);
+		if (!match) return;
+		const line = Number(match[1]);
+		linkedLine = line;
+		// One more frame so the imperative is-linked effect above has applied
+		// classes before we measure for the scroll.
+		requestAnimationFrame(() => scrollToLine(line, false));
 	});
 
 	function openComposer(line: number | null) {
@@ -586,6 +661,47 @@
 
 	function setActiveLine(line: number | null | 'doc') {
 		activeLine = line;
+	}
+
+	function scrollToLine(line: number, smooth: boolean) {
+		const article = articleEl;
+		if (!article) return;
+		// Prefer the most specific sub-anchor (list item, code line, table row)
+		// over the surrounding block. Falls back to the block when the line
+		// isn't a sub-anchor.
+		const target =
+			article.querySelector<HTMLElement>(`.md-sub[data-md-line="${line}"]`) ??
+			article.querySelector<HTMLElement>(`[data-md-line="${line}"]`);
+		if (!target) return;
+		target.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'center' });
+	}
+
+	function flash(msg: string) {
+		flashMsg = msg;
+		if (flashTimer != null) clearTimeout(flashTimer);
+		flashTimer = window.setTimeout(() => {
+			flashMsg = null;
+			flashTimer = null;
+		}, 1800);
+	}
+
+	async function copyLineLink(line: number) {
+		// Build the full URL once so any later navigation doesn't change what we
+		// hand to the clipboard mid-write.
+		const url = `${window.location.origin}${window.location.pathname}#L${line}`;
+		// `replaceState` keeps history clean — successive ¶ clicks shouldn't
+		// pollute the back stack with one entry per line.
+		history.replaceState(null, '', `#L${line}`);
+		linkedLine = line;
+		scrollToLine(line, true);
+		try {
+			await navigator.clipboard?.writeText(url);
+			flash('Link copied');
+		} catch {
+			// Clipboard API may be unavailable (insecure context, permissions);
+			// the URL bar still reflects the permalink, so this is non-fatal.
+			flash('Permalink updated');
+		}
 	}
 
 	async function postComment() {
@@ -777,12 +893,25 @@
 						class:has-comments={blockCommentCount > 0}
 						class:has-sub-anchors={hasSubAnchors}
 						class:is-active={isActive && !hasSubAnchors}
+						class:is-linked={linkedLine === block.line && !hasSubAnchors}
 						data-md-line={hasSubAnchors ? null : block.line}
 					>
 						{#if blockCommentCount > 0 && isRail && !hasSubAnchors}
 							<span class="md-comment-count" aria-hidden="true">
 								[{blockCommentCount}]
 							</span>
+						{/if}
+						{#if !hasSubAnchors}
+							<a
+								class="md-link-btn"
+								href={`#L${block.line}`}
+								data-md-link={block.line}
+								tabindex="-1"
+								aria-label={`Link to line ${block.line}`}
+								title={`Copy link to line ${block.line}`}
+							>
+								¶
+							</a>
 						{/if}
 						{#if auth.status === 'signed-in' && !hasSubAnchors}
 							<button
@@ -927,6 +1056,10 @@
 			{/if}
 		</section>
 	{/if}
+{/if}
+
+{#if flashMsg}
+	<div class="link-flash" role="status" aria-live="polite">{flashMsg}</div>
 {/if}
 
 {#snippet inlineComposer()}
@@ -1750,6 +1883,16 @@
 	.prose :global(.md-block.is-active) {
 		background: color-mix(in oklch, var(--accent-fade) 60%, transparent);
 	}
+	/* Permalink target — persistent until the user navigates away. An
+	   inset accent rail on the left makes the highlight distinguishable
+	   from the hover/cross-highlight is-active treatment. */
+	.prose :global(.md-block.is-linked) {
+		background: color-mix(in oklch, var(--accent-fade) 45%, transparent);
+		box-shadow: inset 2px 0 0 var(--accent);
+	}
+	.prose :global(.md-block.is-active.is-linked) {
+		background: color-mix(in oklch, var(--accent-fade) 80%, transparent);
+	}
 	.prose :global(.md-comment-btn) {
 		position: absolute;
 		left: -3rem;
@@ -1772,6 +1915,44 @@
 		opacity: 1;
 	}
 	.prose :global(.md-comment-btn:hover) {
+		color: var(--accent);
+	}
+
+	/* Permalink glyph ¶. Sits tight to the left of [+] so the pair reads as
+	   one gutter unit. Matches [+]'s font + size for a shared baseline;
+	   `width: 1ch` gives the glyph a consistent column edge that visually
+	   aligns with the brackets on [+]. Line-height is left to inherit from
+	   .prose (leading-body) — [+] is a <button> with `font: inherit` in
+	   base.css, so any explicit line-height here would desync the line-box
+	   and push ¶ off the [+] baseline. Visible to signed-out viewers too —
+	   sharing is always public. */
+	.prose :global(.md-link-btn) {
+		position: absolute;
+		left: -4rem;
+		top: 0.1em;
+		width: 1ch;
+		text-align: center;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		color: var(--ink-3);
+		text-decoration: none;
+		opacity: 0;
+		transition:
+			opacity var(--dur-fast) var(--ease-out-quart),
+			color var(--dur-fast) var(--ease-out-quart);
+	}
+	.prose :global(.md-block:hover > .md-link-btn),
+	.prose :global(.md-link-btn:focus-visible) {
+		opacity: 1;
+	}
+	.prose :global(.md-link-btn:hover) {
+		color: var(--accent);
+	}
+	/* Linked block: keep the ¶ glyph visible at low contrast so the reader
+	   can see which anchor the permalink resolved to without hovering. */
+	.prose :global(.md-block.is-linked > .md-link-btn) {
+		opacity: 0.7;
 		color: var(--accent);
 	}
 
@@ -1810,16 +1991,38 @@
 	.prose :global(.md-sub) {
 		transition: background var(--dur-mid) var(--ease-out-quart);
 	}
-	.prose :global(li.md-sub),
-	.prose :global(.md-code-line) {
+	.prose :global(li.md-sub) {
 		position: relative;
 	}
+	/* `.md-code-line` is intentionally NOT positioned: its buttons need to
+	   anchor against `.md-block` (the next positioned ancestor, *outside* of
+	   `<pre>`) so they aren't clipped by `<pre>`'s `overflow-x: auto`. */
 	.prose :global(li.md-sub.is-active),
 	.prose :global(.md-code-line.is-active) {
 		background: color-mix(in oklch, var(--accent-fade) 60%, transparent);
 	}
 	.prose :global(tr.md-sub.is-active) {
 		background: color-mix(in oklch, var(--accent-fade) 60%, transparent);
+	}
+	/* Permalink target on sub-anchors. Same treatment as the block-level
+	   .is-linked: persistent highlight plus an inset accent rail (rendered
+	   via box-shadow so it doesn't shift layout). */
+	.prose :global(li.md-sub.is-linked),
+	.prose :global(.md-code-line.is-linked) {
+		background: color-mix(in oklch, var(--accent-fade) 45%, transparent);
+		box-shadow: inset 2px 0 0 var(--accent);
+	}
+	.prose :global(tr.md-sub.is-linked) {
+		background: color-mix(in oklch, var(--accent-fade) 45%, transparent);
+	}
+	.prose :global(tr.md-sub.is-linked > td:first-child),
+	.prose :global(tr.md-sub.is-linked > th:first-child) {
+		box-shadow: inset 2px 0 0 var(--accent);
+	}
+	.prose :global(li.md-sub.is-active.is-linked),
+	.prose :global(.md-code-line.is-active.is-linked),
+	.prose :global(tr.md-sub.is-active.is-linked) {
+		background: color-mix(in oklch, var(--accent-fade) 80%, transparent);
 	}
 
 	.prose :global(.md-sub-btn) {
@@ -1851,6 +2054,41 @@
 		color: var(--accent);
 	}
 
+	/* Sub-anchor ¶ — mirrors .md-link-btn block-level positioning and shares
+	   font + size with the [+] sub-btn so the pair sits on a single baseline.
+	   See .md-link-btn for the note on inherited line-height. Visible to
+	   signed-out viewers too. */
+	.prose :global(.md-sub-link) {
+		position: absolute;
+		left: -4rem;
+		top: 0.1em;
+		width: 1ch;
+		text-align: center;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		color: var(--ink-3);
+		text-decoration: none;
+		opacity: 0;
+		transition:
+			opacity var(--dur-fast) var(--ease-out-quart),
+			color var(--dur-fast) var(--ease-out-quart);
+	}
+	.prose :global(.md-sub:hover > .md-sub-link),
+	.prose :global(.md-sub-link:focus-visible) {
+		opacity: 1;
+	}
+	.prose :global(tr.md-sub:hover .md-sub-link) {
+		opacity: 1;
+	}
+	.prose :global(.md-sub-link:hover) {
+		color: var(--accent);
+	}
+	.prose :global(.md-sub.is-linked > .md-sub-link) {
+		opacity: 0.7;
+		color: var(--accent);
+	}
+
 	/* Table-row [+]: lives inside the first cell because <tr> isn't a reliable
 	   containing block for absolute positioning. Push past the cell's left
 	   padding so the button lands in the gutter outside the table. */
@@ -1860,17 +2098,28 @@
 		top: 50%;
 		transform: translateY(-50%);
 	}
+	/* Same trick for the ¶ glyph — seats just outside the row [+]. */
+	.prose :global(tr.md-sub > td:first-child > .md-sub-link),
+	.prose :global(tr.md-sub > th:first-child > .md-sub-link) {
+		left: calc(-1 * var(--space-3) - 4rem);
+		top: 50%;
+		transform: translateY(-50%);
+	}
 
 	/* Code-block lines are <span class="md-sub md-code-line"> rendered inside
 	   <pre>. display:block makes each one its own row; whitespace inside <pre>
 	   already preserves the leading indentation in the text content. The [+]
-	   sits outside the <pre>'s left padding so it lands in the article gutter
-	   alongside the block-level [+]. */
+	   sits in the article gutter alongside the block-level [+] — positioned
+	   against `.md-block` (not `.md-code-line`) so `<pre>`'s `overflow-x: auto`
+	   doesn't clip it. `--md-li` is the line's 0-based index (set inline by
+	   `renderMarkdownBlocks`); the `top` is `<pre>`'s padding-top plus that
+	   index times `<pre>`'s line height (0.9 × body font × 1.5). */
 	.prose :global(.md-code-line) {
 		display: block;
 	}
-	.prose :global(.md-code-line > .md-sub-btn) {
-		left: calc(-1 * var(--space-4) - 3rem);
+	.prose :global(.md-code-line > .md-sub-btn),
+	.prose :global(.md-code-line > .md-sub-link) {
+		top: calc(var(--space-3) + var(--md-li, 0) * 0.9 * var(--text-base) * 1.5);
 	}
 
 	/* When the viewer isn't signed in, hide every per-line affordance — both
@@ -2166,6 +2415,47 @@
 			opacity: 0.5;
 			transform: none;
 		}
+		.prose :global(.md-link-btn),
+		.prose :global(.md-sub-link) {
+			position: static;
+			display: inline-block;
+			margin-right: var(--space-2);
+			opacity: 0.5;
+			transform: none;
+		}
+		/* List items and code lines wrap text and live inside their own line
+		   element, so the inline static placement above puts [+]/¶ on the same
+		   visual line as the first character. Reserve space above each row and
+		   absolutely position the buttons there so they land *above* the line
+		   instead — matching the paragraph case. Buttons use `left: 0` so they
+		   sit inside the row (important for code, where `<pre>`'s `overflow-x`
+		   would clip anything in the negative gutter). `.md-code-line` is
+		   re-promoted to a positioning context here: desktop deliberately leaves
+		   it static so buttons anchor to `.md-block`, but mobile positions them
+		   inside the line's own padding, so the line needs to be the CB. */
+		.prose :global(li.md-sub),
+		.prose :global(.md-code-line) {
+			padding-top: 1.6em;
+		}
+		.prose :global(.md-code-line) {
+			position: relative;
+		}
+		.prose :global(li.md-sub > .md-sub-link),
+		.prose :global(li.md-sub > .md-sub-btn),
+		.prose :global(.md-code-line > .md-sub-link),
+		.prose :global(.md-code-line > .md-sub-btn) {
+			position: absolute;
+			top: 0;
+			margin-right: 0;
+		}
+		.prose :global(li.md-sub > .md-sub-link),
+		.prose :global(.md-code-line > .md-sub-link) {
+			left: 0;
+		}
+		.prose :global(li.md-sub > .md-sub-btn),
+		.prose :global(.md-code-line > .md-sub-btn) {
+			left: 1.6em;
+		}
 	}
 
 	/* --- Threads (root + flat replies) ---
@@ -2313,5 +2603,36 @@
 	   need its own padding; the summary line carries the whole card. */
 	.rail-thread.thread-resolved:not(.thread-expanded) {
 		padding-top: 0;
+	}
+
+	/* Permalink flash toast. Lives at viewport-bottom on a short timer; the
+	   subtle slide-up + fade keeps it out of the user's main task area while
+	   still confirming the clipboard write. */
+	.link-flash {
+		position: fixed;
+		bottom: var(--space-5);
+		left: 50%;
+		transform: translateX(-50%);
+		padding: var(--space-2) var(--space-4);
+		background: var(--ink);
+		color: var(--surface);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		border: var(--border-thin) solid var(--rule-strong);
+		box-shadow: 0 4px 12px rgb(0 0 0 / 0.18);
+		z-index: 10;
+		pointer-events: none;
+		animation: flash-in var(--dur-mid) var(--ease-out-quart);
+	}
+	@keyframes flash-in {
+		from {
+			opacity: 0;
+			transform: translate(-50%, 6px);
+		}
+		to {
+			opacity: 1;
+			transform: translate(-50%, 0);
+		}
 	}
 </style>

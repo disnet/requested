@@ -144,6 +144,19 @@ function commentButtonHtml(line: number, extraClass = ''): string {
 	);
 }
 
+// Permalink glyph next to the [+] button. Renders as an <a> so right-click /
+// middle-click / cmd-click flow through to the browser's normal link handling;
+// plain left-click is intercepted by the reader page to copy the URL and pin
+// a highlight on the target line. Unlike [+], this is visible to all viewers,
+// signed-in or not.
+function linkButtonHtml(line: number, extraClass = ''): string {
+	const cls = `md-link-btn md-sub-link${extraClass ? ' ' + extraClass : ''}`;
+	return (
+		`<a href="#L${line}" class="${cls}" data-md-link="${line}" tabindex="-1" ` +
+		`aria-label="Link to line ${line}" title="Copy link to line ${line}">¶</a>`
+	);
+}
+
 // Add `data-md-line` and `class="md-sub"` to an existing `<tag ...>` open
 // string. If a class attribute already exists, append; otherwise add one.
 function addSubAttrs(openTag: string, line: number): string {
@@ -276,7 +289,7 @@ function annotateListInto(
 
 		return {
 			open: addSubAttrs(openTag, itemLine),
-			inner: commentButtonHtml(itemLine) + processedInner
+			inner: linkButtonHtml(itemLine) + commentButtonHtml(itemLine) + processedInner
 		};
 	});
 	if (remapped == null) return null;
@@ -389,9 +402,10 @@ function annotateTable(
 		// against the row from a real positioned container — a <tr> isn't
 		// reliable for absolutely-positioned descendants.
 		const cellMatch = inner.match(/^\s*<(td|th)\b[^>]*>/i);
+		const buttons = linkButtonHtml(rowLine) + commentButtonHtml(rowLine);
 		const innerWithBtn = cellMatch
-			? inner.slice(0, cellMatch[0].length) + commentButtonHtml(rowLine) + inner.slice(cellMatch[0].length)
-			: commentButtonHtml(rowLine) + inner;
+			? inner.slice(0, cellMatch[0].length) + buttons + inner.slice(cellMatch[0].length)
+			: buttons + inner;
 		return {
 			open: addSubAttrs(openTag, rowLine),
 			inner: innerWithBtn
@@ -438,13 +452,24 @@ function annotateCode(
 		// `<span>` is `display:block` via CSS — a per-line block so the gutter
 		// [+] can position absolutely against it. Empty lines still emit an
 		// empty span so hover targets the right source line.
+		// `--md-li` carries the 0-based line index so the per-line [+]/¶ can
+		// compute its own `top` against `.md-block` (a positioning context that
+		// lives *outside* `<pre>`'s `overflow-x: auto`). Positioning against
+		// `.md-code-line` (inside `<pre>`) would let the scroll container clip
+		// the buttons against the negative gutter.
 		return (
-			`<span class="md-sub md-code-line" data-md-line="${lineNum}">` +
+			`<span class="md-sub md-code-line" data-md-line="${lineNum}" style="--md-li: ${i}">` +
+			linkButtonHtml(lineNum, 'md-sub-link-code') +
 			commentButtonHtml(lineNum, 'md-sub-btn-code') +
 			rawLine +
 			`</span>`
 		);
 	});
 
-	return { html: head + wrapped.join('\n') + trailing + tail, subLines };
+	// Join with no separator: each span is `display:block`, so visual line
+	// breaks come from layout. A literal `\n` between spans would, under
+	// `<pre>`'s `white-space: pre`, materialize as an extra blank line between
+	// each row and double the block's height — and offset the gutter-button
+	// `top` calc by one line per row.
+	return { html: head + wrapped.join('') + trailing + tail, subLines };
 }
