@@ -4,6 +4,7 @@
 	import type { ResolvedPathname } from '$app/types';
 	import { parseAtUri } from '$lib/atproto/documents';
 	import { renderMarkdown } from '$lib/markdown';
+	import { downloadMarkdown } from '$lib/export';
 
 	const { data } = $props();
 
@@ -37,6 +38,12 @@
 	}
 
 	const currentVersionRkey = $derived(loaded?.version ? parseAtUri(loaded.version.uri).rkey : null);
+
+	function onExport() {
+		if (!loaded || !version) return;
+		const title = loaded.value.title + (versionIndex ? ` v${versionIndex.n}` : '');
+		downloadMarkdown(title, version.value.body, version.rkey);
+	}
 </script>
 
 <svelte:head>
@@ -131,6 +138,7 @@
 			<nav class="meta-actions">
 				<a class="action" href={historyPath}>[ history ]</a>
 				<a class="action" href={diffBasePath}>[ diff ]</a>
+				<button type="button" class="action" onclick={onExport}>[ export ]</button>
 			</nav>
 		</header>
 
