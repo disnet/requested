@@ -214,20 +214,23 @@ export function resolveLineShift(
 // match isn't unique at write time.
 const SUGGESTION_CONTEXT = 48;
 
-// Builds an anchor for replacing a single line. Captures the line text as
-// `target` and up to SUGGESTION_CONTEXT chars on either side from the
-// surrounding body (including the separating newlines). Replacement is
-// passed through verbatim.
+// Builds an anchor for replacing a contiguous run of lines. Captures the lines
+// between `startLine` and `endLine` (1-indexed, inclusive) as `target` and up
+// to SUGGESTION_CONTEXT chars on either side from the surrounding body
+// (including the separating newlines). `endLine` defaults to `startLine` for
+// the common single-line case. Replacement is passed through verbatim.
 export function buildSuggestionAnchor(
 	body: string,
-	line: number,
-	replacement: string
+	startLine: number,
+	replacement: string,
+	endLine: number = startLine
 ): CommentSuggestion {
 	const lines = body.split('\n');
-	const idx = line - 1;
-	const target = lines[idx] ?? '';
-	const beforeFull = idx <= 0 ? '' : lines.slice(0, idx).join('\n') + '\n';
-	const afterFull = idx >= lines.length - 1 ? '' : '\n' + lines.slice(idx + 1).join('\n');
+	const startIdx = startLine - 1;
+	const endIdx = endLine - 1;
+	const target = lines.slice(startIdx, endIdx + 1).join('\n');
+	const beforeFull = startIdx <= 0 ? '' : lines.slice(0, startIdx).join('\n') + '\n';
+	const afterFull = endIdx >= lines.length - 1 ? '' : '\n' + lines.slice(endIdx + 1).join('\n');
 	const before = beforeFull.slice(-SUGGESTION_CONTEXT);
 	const after = afterFull.slice(0, SUGGESTION_CONTEXT);
 	return { before, target, after, replacement };

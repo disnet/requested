@@ -75,13 +75,20 @@
 	let composerPosting = $state(false);
 	let composerError = $state<string | null>(null);
 
-	// Suggest-edit mode on the composer. Only meaningful when `composer.line` is
-	// non-null and we aren't replying — anchoring a textual replacement requires
-	// a specific source line on the pinned version's body. `replacement` is the
-	// textarea contents; we build the before/target/after anchor from the
-	// current body + line at submit time.
-	let composerMode = $state<'comment' | 'suggest'>('comment');
-	let composerReplacement = $state('');
+	// Inline suggest-edit state. Independent from the comment composer: clicking
+	// [~] on a block (or sub-anchor) swaps the rendered markdown for a CodeMirror
+	// editor preloaded with the source for that line range. `startLine`/`endLine`
+	// are the 1-indexed source-line span being edited (`endLine === startLine` for
+	// single-line edits); `replacement` is the editor's working text. Submitting
+	// posts a `fyi.requested.comment` with an empty body and a suggestion anchor
+	// derived from the current body + range at submit time.
+	let suggestEdit = $state<{
+		startLine: number;
+		endLine: number;
+		replacement: string;
+	} | null>(null);
+	let suggestPosting = $state(false);
+	let suggestError = $state<string | null>(null);
 
 	// Per-thread state for the author's "Apply" action on a suggestion. Mirrors
 	// the resolveBusy/Error pair next door so the surfaces look the same.
@@ -140,8 +147,8 @@
 			composer = null;
 			composerBody = '';
 			composerError = null;
-			composerMode = 'comment';
-			composerReplacement = '';
+			suggestEdit = null;
+			suggestError = null;
 			applyBusy.clear();
 			applyError.clear();
 			expandedLines.clear();
@@ -483,6 +490,27 @@
 		return () => article.removeEventListener('click', onClick);
 	});
 
+	// Sub-anchor [~] buttons mirror the [+] delegation above. Each button carries
+	// `data-md-edit="<line>"`; sub-anchors are always single source line, so the
+	// edit range is just that line.
+	$effect(() => {
+		const article = articleEl;
+		if (!article) return;
+		const onClick = (e: MouseEvent) => {
+			const target = e.target as HTMLElement | null;
+			const btn = target?.closest<HTMLElement>('.md-sub-edit-btn');
+			if (!btn) return;
+			const lineStr = btn.dataset.mdEdit;
+			if (lineStr == null) return;
+			const lineNum = Number(lineStr);
+			if (!Number.isFinite(lineNum)) return;
+			e.preventDefault();
+			tryOpenSuggestEdit(lineNum, lineNum);
+		};
+		article.addEventListener('click', onClick);
+		return () => article.removeEventListener('click', onClick);
+	});
+
 	// ¶ permalink glyphs (both block-level and sub-anchor) carry
 	// `data-md-link="<line>"` and an `href="#L<line>"`. Plain left-click is
 	// intercepted to update the hash silently, copy the full URL, and pin a
@@ -557,10 +585,13 @@
 		if (!article) return;
 		// Track everything that can change the set of portal'd inline-threads.
 		void composer;
+		void suggestEdit;
 		void expandedLines.size;
 		void comments;
 		void renderedBlocks;
-		const portals = article.querySelectorAll<HTMLElement>('.inline-thread[data-portal-line]');
+		// Match anything carrying `data-portal-line`: inline-threads as before,
+		// plus the inline suggest-editor when it opens on a list-item sub-anchor.
+		const portals = article.querySelectorAll<HTMLElement>('[data-portal-line]');
 		for (const portal of portals) {
 			const lineStr = portal.dataset.portalLine;
 			if (!lineStr) continue;
@@ -652,11 +683,17 @@
 	}
 
 	function openComposer(line: number | null) {
+		// Two affordances can't share the same block-line: opening a comment
+		// composer on a line that already has an inline suggest-editor open
+		// dismisses the editor so it doesn't end up half-hidden behind the
+		// composer card on mobile or compete for visual focus.
+		if (line != null && suggestEdit && lineInRange(line, suggestEdit)) {
+			suggestEdit = null;
+			suggestError = null;
+		}
 		composer = { line, parent: null, replyToHandle: null };
 		composerBody = '';
 		composerError = null;
-		composerMode = 'comment';
-		composerReplacement = '';
 		// On mobile, expand the inline thread so the composer is visible. Sub-
 		// anchor composers (e.g., on a specific list item) expand the parent
 		// block — expandedLines is keyed by block start line.
@@ -678,8 +715,6 @@
 		};
 		composerBody = '';
 		composerError = null;
-		composerMode = 'comment';
-		composerReplacement = '';
 		if (!isRail && target.value.line != null) {
 			const blockLine = subToBlock.get(target.value.line) ?? target.value.line;
 			expandedLines.add(blockLine);
@@ -690,22 +725,60 @@
 		composer = null;
 		composerBody = '';
 		composerError = null;
-		composerMode = 'comment';
-		composerReplacement = '';
 	}
 
-	// Toggle the composer into suggest mode. Prefills the replacement textarea
-	// with the current line's text so the user edits a copy, the same way
-	// GitHub's "Add a suggestion" populates the suggestion block.
-	function toggleSuggestMode() {
-		if (!composer || composer.line == null || composer.parent) return;
-		if (composerMode === 'suggest') {
-			composerMode = 'comment';
-			composerReplacement = '';
+	// Inline suggest-edit. Two entry points — block-level (top-level paragraph,
+	// heading, blockquote: edits the block's entire source range) and sub-anchor
+	// (list item, code line, table row: edits exactly that one source line).
+	// Single state shape handles both: startLine === endLine for the sub-anchor
+	// case. Opens the editor, dismisses the comment composer if it was attached
+	// to a line inside the same range so the two affordances don't overlap.
+	function tryOpenSuggestEdit(startLine: number, endLine: number) {
+		if (auth.status !== 'signed-in') {
+			gotoSignIn();
 			return;
 		}
-		composerMode = 'suggest';
-		composerReplacement = getRawLineText(loaded?.version?.value.body, composer.line);
+		openSuggestEdit(startLine, endLine);
+	}
+
+	function openSuggestEdit(startLine: number, endLine: number) {
+		const body = loaded?.version?.value.body;
+		if (!body) return;
+		if (
+			composer &&
+			composer.line != null &&
+			composer.line >= startLine &&
+			composer.line <= endLine
+		) {
+			composer = null;
+			composerBody = '';
+			composerError = null;
+		}
+		const replacement = body
+			.split('\n')
+			.slice(startLine - 1, endLine)
+			.join('\n');
+		suggestEdit = { startLine, endLine, replacement };
+		suggestError = null;
+		// Mobile: expand the containing block so the swapped-in editor is in view.
+		if (!isRail) {
+			const blockLine = subToBlock.get(startLine) ?? startLine;
+			expandedLines.add(blockLine);
+		}
+	}
+
+	function closeSuggestEdit() {
+		if (suggestPosting) return;
+		suggestEdit = null;
+		suggestError = null;
+	}
+
+	function onSuggestEditEscape() {
+		closeSuggestEdit();
+	}
+
+	function lineInRange(line: number, range: { startLine: number; endLine: number }): boolean {
+		return line >= range.startLine && line <= range.endLine;
 	}
 
 	function toggleResolvedExpand(rootUri: string) {
@@ -859,24 +932,12 @@
 			return;
 		}
 
-		const isSuggest = composerMode === 'suggest' && current.line != null && !current.parent;
-		let suggestion: CommentSuggestion | undefined;
-		if (isSuggest && current.line != null) {
-			const target = getRawLineText(doc.version.value.body, current.line);
-			if (composerReplacement === target) {
-				composerError = 'Suggested edit is identical to the original line.';
-				return;
-			}
-			suggestion = buildSuggestionAnchor(doc.version.value.body, current.line, composerReplacement);
-		}
-
 		composerPosting = true;
 		composerError = null;
 		try {
-			const opts: { line?: number; parent?: StrongRef; suggestion?: CommentSuggestion } = {};
+			const opts: { line?: number; parent?: StrongRef } = {};
 			if (current.line != null) opts.line = current.line;
 			if (current.parent) opts.parent = current.parent;
-			if (suggestion) opts.suggestion = suggestion;
 			await createComment(
 				agent,
 				myDid,
@@ -893,6 +954,55 @@
 			composerError = err instanceof Error ? err.message : String(err);
 		} finally {
 			composerPosting = false;
+		}
+	}
+
+	// Post the inline suggest-edit. Body is empty (the diff is the whole
+	// payload); we anchor the suggestion against the current document body at
+	// submit time so it survives intervening writes. The `line` field carries
+	// the range's start so existing line-anchored UI (rail card positioning,
+	// shift-tracking, etc.) lights up at the natural source location.
+	async function postSuggestEdit() {
+		const agent = auth.agent;
+		const myDid = auth.did;
+		const doc = loaded;
+		const current = suggestEdit;
+		if (suggestPosting) return;
+		if (!agent || !myDid || !doc?.version || !current) return;
+
+		const lines = doc.version.value.body.split('\n');
+		const original = lines.slice(current.startLine - 1, current.endLine).join('\n');
+		if (current.replacement === original) {
+			suggestError = 'Suggested edit is identical to the original.';
+			return;
+		}
+
+		suggestPosting = true;
+		suggestError = null;
+		try {
+			const suggestion = buildSuggestionAnchor(
+				doc.version.value.body,
+				current.startLine,
+				current.replacement,
+				current.endLine
+			);
+			await createComment(
+				agent,
+				myDid,
+				{
+					documentUri: doc.uri,
+					version: { uri: doc.version.uri, cid: doc.version.cid }
+				},
+				'',
+				{ line: current.startLine, suggestion }
+			);
+			suggestEdit = null;
+			suggestError = null;
+			await loadComments(doc, agent, myDid);
+		} catch (err) {
+			suggestError = err instanceof Error ? err.message : String(err);
+		} finally {
+			suggestPosting = false;
 		}
 	}
 
@@ -921,13 +1031,6 @@
 	function getLineText(body: string | undefined, line: number | null): string {
 		if (!body || line == null) return '';
 		return (body.split('\n')[line - 1] ?? '').trim();
-	}
-
-	// Verbatim line, without trimming. Used to seed the suggestion replacement
-	// textarea so original indentation is preserved when the user edits.
-	function getRawLineText(body: string | undefined, line: number | null): string {
-		if (!body || line == null) return '';
-		return body.split('\n')[line - 1] ?? '';
 	}
 
 	function formatRelative(iso: string): string {
@@ -1049,20 +1152,26 @@
 						composer.line != null &&
 						blockAllLines.includes(composer.line) &&
 						composer.parent == null}
+					{@const blockBeingEdited =
+						!hasSubAnchors &&
+						suggestEdit != null &&
+						suggestEdit.startLine === block.line &&
+						suggestEdit.endLine === block.endLine}
 					<div
 						class="md-block"
 						class:has-comments={blockCommentCount > 0}
 						class:has-sub-anchors={hasSubAnchors}
-						class:is-active={isActive && !hasSubAnchors}
-						class:is-linked={linkedLine === block.line && !hasSubAnchors}
+						class:is-active={isActive && !hasSubAnchors && !blockBeingEdited}
+						class:is-linked={linkedLine === block.line && !hasSubAnchors && !blockBeingEdited}
+						class:is-editing={blockBeingEdited}
 						data-md-line={hasSubAnchors ? null : block.line}
 					>
-						{#if blockCommentCount > 0 && isRail && !hasSubAnchors}
+						{#if blockCommentCount > 0 && isRail && !hasSubAnchors && !blockBeingEdited}
 							<span class="md-comment-count" aria-hidden="true">
 								[{blockCommentCount}]
 							</span>
 						{/if}
-						{#if !hasSubAnchors}
+						{#if !hasSubAnchors && !blockBeingEdited}
 							<a
 								class="md-link-btn"
 								href={`#L${block.line}`}
@@ -1073,8 +1182,6 @@
 							>
 								¶
 							</a>
-						{/if}
-						{#if !hasSubAnchors}
 							<button
 								type="button"
 								class="md-comment-btn"
@@ -1088,9 +1195,26 @@
 							>
 								[+]
 							</button>
+							<button
+								type="button"
+								class="md-edit-btn"
+								aria-label={auth.status === 'signed-in'
+									? `Suggest an edit starting at line ${block.line}`
+									: `Sign in to suggest an edit at line ${block.line}`}
+								title={auth.status === 'signed-in'
+									? `Suggest an edit`
+									: 'Sign in to suggest an edit'}
+								onclick={() => tryOpenSuggestEdit(block.line, block.endLine)}
+							>
+								[~]
+							</button>
 						{/if}
-						<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
-						{@html block.html}
+						{#if blockBeingEdited}
+							{@render inlineSuggestEditor()}
+						{:else}
+							<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
+							{@html block.html}
+						{/if}
 						{#if blockCommentCount > 0 && !isRail}
 							<button
 								type="button"
@@ -1103,6 +1227,15 @@
 									{blockCommentCount === 1 ? 'comment' : 'comments'}
 								</span>
 							</button>
+						{/if}
+						{#if hasSubAnchors && suggestEdit && blockAllLines.includes(suggestEdit.startLine) && suggestEdit.startLine === suggestEdit.endLine}
+							<!-- Sub-anchor suggest-edit (inside list / table / code). The portal
+							     effect re-parents this div into the matching <li> on mobile-list
+							     blocks; for tables, code, and desktop it stays at its rendered
+							     position underneath the block. -->
+							<div class="suggest-edit-portal" data-portal-line={suggestEdit.startLine}>
+								{@render inlineSuggestEditor()}
+							</div>
 						{/if}
 						{#if !isRail && block.kind === 'list'}
 							<!-- List blocks render one inline-thread per affected sub-line so that
@@ -1244,57 +1377,68 @@
 	<div class="link-flash" role="status" aria-live="polite">{flashMsg}</div>
 {/if}
 
+{#snippet inlineSuggestEditor()}
+	{#if suggestEdit}
+		{@const isRange = suggestEdit.startLine !== suggestEdit.endLine}
+		<form
+			class="suggest-edit"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void postSuggestEdit();
+			}}
+		>
+			<header class="suggest-edit-header">
+				<span class="anchor-tag anchor-tag-suggest">edit</span>
+				<span class="suggest-edit-target">
+					{#if isRange}
+						Editing source lines {suggestEdit.startLine}–{suggestEdit.endLine}
+					{:else}
+						Editing source line {suggestEdit.startLine}
+					{/if}
+				</span>
+				<span class="suggest-edit-hint">⌘↩ to post · esc to cancel</span>
+			</header>
+			<CommentEditor
+				bind:value={suggestEdit.replacement}
+				placeholder="Edit the markdown source for this line"
+				onEscape={onSuggestEditEscape}
+				onSubmit={postSuggestEdit}
+			/>
+			{#if suggestError}
+				<p class="error suggest-edit-error">{suggestError}</p>
+			{/if}
+			<div class="suggest-edit-actions">
+				<button
+					type="button"
+					class="bracket-btn"
+					onclick={closeSuggestEdit}
+					disabled={suggestPosting}
+				>
+					[ cancel ]
+				</button>
+				<button type="submit" class="bracket-btn bracket-btn-primary" disabled={suggestPosting}>
+					{suggestPosting ? '[ posting… ]' : '[ post suggestion ]'}
+				</button>
+			</div>
+		</form>
+	{/if}
+{/snippet}
+
 {#snippet inlineComposer()}
-	{@const canSuggest = composer != null && composer.line != null && !composer.parent}
-	{@const targetText = getRawLineText(loaded?.version?.value.body, composer?.line ?? null)}
-	{@const isSuggest = canSuggest && composerMode === 'suggest'}
 	<form class="composer composer-inline" onsubmit={submitComment}>
 		<header class="composer-header">
 			{#if composer?.parent}
 				<span class="muted">Replying to @{composer.replyToHandle ?? '…'}</span>
-			{:else if isSuggest}
-				<span class="anchor-tag anchor-tag-suggest">edit</span>
-				<span class="muted">Suggesting an edit to this line</span>
 			{:else if composer?.line != null}
 				<span class="muted">Commenting on this line</span>
 			{:else}
 				<span class="anchor-tag">doc</span>
 				<span class="muted">Commenting on the whole document</span>
 			{/if}
-			{#if canSuggest}
-				<button
-					type="button"
-					class="suggest-toggle"
-					aria-pressed={isSuggest}
-					onclick={toggleSuggestMode}
-				>
-					{isSuggest ? '[ × suggesting ]' : '[ + suggest edit ]'}
-				</button>
-			{/if}
 		</header>
-		{#if isSuggest}
-			<div class="suggestion-edit">
-				<div class="suggestion-edit-row">
-					<span class="suggestion-edit-label suggestion-edit-label-from">From</span>
-					<code class="suggestion-edit-from">{targetText || '(empty line)'}</code>
-				</div>
-				<div class="suggestion-edit-row">
-					<span class="suggestion-edit-label suggestion-edit-label-to">To</span>
-					<textarea
-						class="suggestion-edit-to"
-						bind:value={composerReplacement}
-						spellcheck="false"
-						rows="2"
-						placeholder="Proposed replacement"
-					></textarea>
-				</div>
-			</div>
-		{/if}
 		<CommentEditor
 			bind:value={composerBody}
-			placeholder={isSuggest
-				? 'Why this edit? (markdown supported)'
-				: 'Write a comment in markdown…'}
+			placeholder="Write a comment in markdown…"
 			onEscape={onComposerEscape}
 			onSubmit={postComment}
 		/>
@@ -1307,9 +1451,7 @@
 					? '[ posting… ]'
 					: composer?.parent
 						? '[ post reply ]'
-						: isSuggest
-							? '[ post suggestion ]'
-							: '[ post comment ]'}
+						: '[ post comment ]'}
 			</button>
 			<button type="button" class="bracket-btn" onclick={closeComposer} disabled={composerPosting}>
 				[ cancel ]
@@ -2190,7 +2332,7 @@
 	}
 	.prose :global(.md-comment-btn) {
 		position: absolute;
-		left: -3rem;
+		left: -3.5rem;
 		top: 0.1em;
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
@@ -2213,6 +2355,36 @@
 		color: var(--accent);
 	}
 
+	/* Block-level [~] suggest-edit trigger. Sits to the right of [+] in the
+	   gutter, completing the ¶/[+]/[~] row. Hover-revealed identically to its
+	   siblings; tinted toward `--addition` on hover so the action-type maps to
+	   color (matching the `.suggestion-badge` border + the accent rail on the
+	   editor frame). */
+	.prose :global(.md-edit-btn) {
+		position: absolute;
+		left: -1.5rem;
+		top: 0.1em;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		color: var(--ink-3);
+		background: transparent;
+		border: 0;
+		padding: 0;
+		cursor: pointer;
+		opacity: 0;
+		transition:
+			opacity var(--dur-fast) var(--ease-out-quart),
+			color var(--dur-fast) var(--ease-out-quart);
+	}
+	.prose :global(.md-block:hover > .md-edit-btn),
+	.prose :global(.md-edit-btn:focus-visible) {
+		opacity: 1;
+	}
+	.prose :global(.md-edit-btn:hover) {
+		color: var(--addition);
+	}
+
 	/* Permalink glyph ¶. Sits tight to the left of [+] so the pair reads as
 	   one gutter unit. Matches [+]'s font + size for a shared baseline;
 	   `width: 1ch` gives the glyph a consistent column edge that visually
@@ -2223,7 +2395,7 @@
 	   sharing is always public. */
 	.prose :global(.md-link-btn) {
 		position: absolute;
-		left: -4rem;
+		left: -5rem;
 		top: 0.1em;
 		width: 1ch;
 		text-align: center;
@@ -2257,7 +2429,7 @@
 	   the count when both are present, so they never collide. */
 	.prose :global(.md-comment-count) {
 		position: absolute;
-		left: -3rem;
+		left: -3.5rem;
 		top: 0.1em;
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
@@ -2269,8 +2441,13 @@
 	.prose :global(.md-block.is-active > .md-comment-count) {
 		color: var(--accent);
 	}
+	/* When a block carries comments, the persistent [N] count sits in the
+	   [+]/[~] gutter slot. Drop both action buttons one row so the trio reads
+	   as `¶ [N]` over `[+] [~]` instead of letting [~] sit alongside the count
+	   while [+] hangs alone below. */
 	@media (min-width: 1200px) {
-		.doc-shell .prose :global(.md-block.has-comments > .md-comment-btn) {
+		.doc-shell .prose :global(.md-block.has-comments > .md-comment-btn),
+		.doc-shell .prose :global(.md-block.has-comments > .md-edit-btn) {
 			top: 1.4em;
 		}
 	}
@@ -2324,7 +2501,7 @@
 
 	.prose :global(.md-sub-btn) {
 		position: absolute;
-		left: -3rem;
+		left: -3.5rem;
 		top: 0.1em;
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
@@ -2351,13 +2528,43 @@
 		color: var(--accent);
 	}
 
+	/* Sub-anchor [~] — mirrors .md-sub-btn (the [+] sibling) at the third
+	   gutter slot. Same visibility rules; addition-tinted hover. */
+	.prose :global(.md-sub-edit-btn) {
+		position: absolute;
+		left: -1.5rem;
+		top: 0.1em;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		color: var(--ink-3);
+		background: transparent;
+		border: 0;
+		padding: 0;
+		cursor: pointer;
+		opacity: 0;
+		transition:
+			opacity var(--dur-fast) var(--ease-out-quart),
+			color var(--dur-fast) var(--ease-out-quart);
+	}
+	.prose :global(.md-sub:hover > .md-sub-edit-btn),
+	.prose :global(.md-sub-edit-btn:focus-visible) {
+		opacity: 1;
+	}
+	.prose :global(tr.md-sub:hover .md-sub-edit-btn) {
+		opacity: 1;
+	}
+	.prose :global(.md-sub-edit-btn:hover) {
+		color: var(--addition);
+	}
+
 	/* Sub-anchor ¶ — mirrors .md-link-btn block-level positioning and shares
 	   font + size with the [+] sub-btn so the pair sits on a single baseline.
 	   See .md-link-btn for the note on inherited line-height. Visible to
 	   signed-out viewers too. */
 	.prose :global(.md-sub-link) {
 		position: absolute;
-		left: -4rem;
+		left: -5rem;
 		top: 0.1em;
 		width: 1ch;
 		text-align: center;
@@ -2391,16 +2598,41 @@
 	   padding so the button lands in the gutter outside the table. */
 	.prose :global(tr.md-sub > td:first-child > .md-sub-btn),
 	.prose :global(tr.md-sub > th:first-child > .md-sub-btn) {
-		left: calc(-1 * var(--space-3) - 3rem);
+		left: calc(-1 * var(--space-3) - 3.5rem);
+		top: 50%;
+		transform: translateY(-50%);
+	}
+	/* Table-row [~] — same `inside the first cell` trick, but offset for the
+	   third gutter slot. */
+	.prose :global(tr.md-sub > td:first-child > .md-sub-edit-btn),
+	.prose :global(tr.md-sub > th:first-child > .md-sub-edit-btn) {
+		left: calc(-1 * var(--space-3) - 1.5rem);
 		top: 50%;
 		transform: translateY(-50%);
 	}
 	/* Same trick for the ¶ glyph — seats just outside the row [+]. */
 	.prose :global(tr.md-sub > td:first-child > .md-sub-link),
 	.prose :global(tr.md-sub > th:first-child > .md-sub-link) {
-		left: calc(-1 * var(--space-3) - 4rem);
+		left: calc(-1 * var(--space-3) - 5rem);
 		top: 50%;
 		transform: translateY(-50%);
+	}
+
+	/* List-item sub-anchor buttons: `li.md-sub` is `position: relative`, so the
+	   shared `.md-sub-link/.md-sub-btn/.md-sub-edit-btn` positions resolve
+	   against the LI's content box, not `.md-block`. That's one UL padding-left
+	   (~2.5ch) further right than the block-level buttons, which pushes [~]
+	   into the area where the list marker (bullet / number) sits. Shift each
+	   sub-anchor button on a list item one extra `1.5rem` left so it lands in
+	   the md-block gutter alongside the block-level trio, clearing the marker. */
+	.prose :global(li.md-sub > .md-sub-link) {
+		left: -6.5rem;
+	}
+	.prose :global(li.md-sub > .md-sub-btn) {
+		left: -5rem;
+	}
+	.prose :global(li.md-sub > .md-sub-edit-btn) {
+		left: -3rem;
 	}
 
 	/* Code-block lines are <span class="md-sub md-code-line"> rendered inside
@@ -2415,7 +2647,8 @@
 		display: block;
 	}
 	.prose :global(.md-code-line > .md-sub-btn),
-	.prose :global(.md-code-line > .md-sub-link) {
+	.prose :global(.md-code-line > .md-sub-link),
+	.prose :global(.md-code-line > .md-sub-edit-btn) {
 		top: calc(var(--space-3) + var(--md-li, 0) * 0.9 * var(--text-base) * 1.5);
 	}
 
@@ -2712,7 +2945,8 @@
 			padding-top: 1.4em;
 		}
 		.prose :global(.md-link-btn),
-		.prose :global(.md-comment-btn) {
+		.prose :global(.md-comment-btn),
+		.prose :global(.md-edit-btn) {
 			position: absolute;
 			top: 0;
 			line-height: 1;
@@ -2725,7 +2959,10 @@
 			left: 0;
 		}
 		.prose :global(.md-comment-btn) {
-			left: 1.5em;
+			left: 2em;
+		}
+		.prose :global(.md-edit-btn) {
+			left: 4.5em;
 		}
 		.prose :global(h2),
 		.prose :global(h3),
@@ -2733,7 +2970,8 @@
 			margin-top: var(--space-4);
 		}
 		.prose :global(.md-sub-btn),
-		.prose :global(.md-sub-link) {
+		.prose :global(.md-sub-link),
+		.prose :global(.md-sub-edit-btn) {
 			line-height: 1;
 			opacity: 0.5;
 			transform: none;
@@ -2743,11 +2981,15 @@
 		   since there's no left margin. Pull them inside the first cell instead. */
 		.prose :global(tr.md-sub > td:first-child > .md-sub-btn),
 		.prose :global(tr.md-sub > th:first-child > .md-sub-btn) {
-			left: 1.5em;
+			left: 2em;
 		}
 		.prose :global(tr.md-sub > td:first-child > .md-sub-link),
 		.prose :global(tr.md-sub > th:first-child > .md-sub-link) {
 			left: 0;
+		}
+		.prose :global(tr.md-sub > td:first-child > .md-sub-edit-btn),
+		.prose :global(tr.md-sub > th:first-child > .md-sub-edit-btn) {
+			left: 4.5em;
 		}
 		/* List items and code lines wrap text and live inside their own line
 		   element, so the inline static placement above puts [+]/¶ on the same
@@ -2768,8 +3010,10 @@
 		}
 		.prose :global(li.md-sub > .md-sub-link),
 		.prose :global(li.md-sub > .md-sub-btn),
+		.prose :global(li.md-sub > .md-sub-edit-btn),
 		.prose :global(.md-code-line > .md-sub-link),
-		.prose :global(.md-code-line > .md-sub-btn) {
+		.prose :global(.md-code-line > .md-sub-btn),
+		.prose :global(.md-code-line > .md-sub-edit-btn) {
 			position: absolute;
 			top: 0;
 			margin-right: 0;
@@ -2780,7 +3024,11 @@
 		}
 		.prose :global(li.md-sub > .md-sub-btn),
 		.prose :global(.md-code-line > .md-sub-btn) {
-			left: 1.3em;
+			left: 2em;
+		}
+		.prose :global(li.md-sub > .md-sub-edit-btn),
+		.prose :global(.md-code-line > .md-sub-edit-btn) {
+			left: 4.5em;
 		}
 	}
 
@@ -3035,90 +3283,85 @@
 		letter-spacing: var(--track-tight);
 	}
 
-	/* --- Composer: suggest-edit affordance --- */
+	/* --- Inline suggest-edit ---
+	   Click `[~]` on a top-level block: the block's rendered HTML swaps for a
+	   CodeMirror editor preloaded with the raw source. Click `[~]` on a sub-
+	   anchor (li, tr, code line): an editor appears next to the line via the
+	   `data-portal-line` mechanism shared with inline-threads. Posting writes a
+	   `fyi.requested.comment` with a `suggestion` anchor and an empty body —
+	   the diff is the whole payload, no accompanying note. */
 	.anchor-tag-suggest {
 		border-color: var(--addition);
 		color: var(--addition);
 	}
-	.suggest-toggle {
-		margin-left: auto;
-		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
-		letter-spacing: var(--track-tight);
-		color: var(--ink-3);
-		background: transparent;
-		border: 0;
-		padding: 0;
-		cursor: pointer;
-		transition: color var(--dur-fast) var(--ease-out-quart);
-	}
-	.suggest-toggle:hover,
-	.suggest-toggle[aria-pressed='true'] {
-		color: var(--addition);
-	}
 
-	.suggestion-edit {
+	.suggest-edit {
 		display: flex;
 		flex-direction: column;
-		border: var(--border-thin) solid var(--rule);
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		line-height: var(--leading-snug);
-		overflow: hidden;
-	}
-	.suggestion-edit-row {
-		display: flex;
-		align-items: flex-start;
 		gap: var(--space-2);
-		padding: 4px var(--space-3);
+		padding: var(--space-3) var(--space-3) var(--space-4);
+		background: var(--surface-raised);
+		border: var(--border-thin) solid var(--rule-strong);
+		box-shadow: inset 2px 0 0 var(--addition);
 	}
-	.suggestion-edit-row + .suggestion-edit-row {
-		border-top: var(--border-thin) solid var(--rule);
+	.md-block.is-editing > .suggest-edit {
+		margin: var(--space-2) calc(-1 * var(--space-2));
 	}
-	.suggestion-edit-row:first-child {
-		background: var(--deletion-fade);
+	.suggest-edit-header {
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: var(--space-2) var(--space-3);
+		font-size: var(--text-xs);
 	}
-	.suggestion-edit-row:last-child {
-		background: var(--addition-fade);
+	.suggest-edit-target {
+		color: var(--ink-2);
+		font-family: var(--font-mono);
+		letter-spacing: var(--track-tight);
 	}
-	.suggestion-edit-label {
-		flex: 0 0 3ch;
+	.suggest-edit-hint {
+		margin-left: auto;
+		color: var(--ink-4);
+		font-family: var(--font-mono);
 		font-size: var(--text-2xs);
 		letter-spacing: var(--track-caps);
 		text-transform: uppercase;
-		padding-top: 2px;
 	}
-	.suggestion-edit-label-from {
-		color: var(--deletion);
+	@media (max-width: 720px) {
+		.suggest-edit-hint {
+			display: none;
+		}
 	}
-	.suggestion-edit-label-to {
-		color: var(--addition);
+	.suggest-edit-error {
+		font-size: var(--text-xs);
+		margin: 0;
 	}
-	.suggestion-edit-from {
-		flex: 1 1 auto;
-		min-width: 0;
+	.suggest-edit-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		justify-content: flex-end;
+	}
+
+	/* Editing state on the host block: drop the hover-affordance gutter
+	   buttons (the trigger row), but keep the block-level layout otherwise.
+	   The accent-rail inside .suggest-edit reads as the gutter mark. */
+	.prose :global(.md-block.is-editing) {
 		background: transparent;
-		border: 0;
-		padding: 0;
-		white-space: pre-wrap;
-		word-break: break-word;
-		letter-spacing: var(--track-tight);
-		color: var(--ink-2);
 	}
-	.suggestion-edit-to {
-		flex: 1 1 auto;
-		min-width: 0;
-		font: inherit;
-		letter-spacing: var(--track-tight);
-		color: var(--ink);
-		background: var(--surface);
-		border: var(--border-thin) solid var(--rule);
-		padding: 4px 6px;
-		resize: vertical;
+
+	/* Sub-anchor host: when portaled into an <li>, the editor inherits list
+	   indentation; pull it left a touch so it lines up under the item's text
+	   rather than under the bullet's text indent. When NOT portaled (tables,
+	   code, desktop rail mode), it sits below the composite block as a normal
+	   block-level child. */
+	.suggest-edit-portal {
+		margin-top: var(--space-3);
 	}
-	.suggestion-edit-to:focus {
-		outline: var(--border-thick) solid var(--addition);
-		outline-offset: -2px;
-		border-color: var(--addition);
+	/* Wrapped in :global because the portal effect re-parents .suggest-edit-portal
+	   into an <li> rendered inside {@html}; the parent-selector branch isn't
+	   reachable to Svelte's compile-time CSS analyzer otherwise. */
+	:global(li.md-sub > .suggest-edit-portal) {
+		margin-left: calc(-1 * var(--space-2));
 	}
 </style>

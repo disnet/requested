@@ -36,6 +36,13 @@ export type RenderedBlock = {
 	 *  the *original* body so it matches the line numbers stored on comment
 	 *  records, even when stripLeadingH1 hides the title from the output. */
 	line: number;
+	/** 1-indexed source line where this top-level block's content ends
+	 *  (inclusive). Equal to `line` for single-source-line blocks. Used to scope
+	 *  the inline suggest-edit editor so the editable region matches the rendered
+	 *  block, even when the block spans multiple source lines (a hard-wrapped
+	 *  paragraph, a multi-line blockquote). Trailing blank lines that separate
+	 *  this block from the next are excluded. */
+	endLine: number;
 	html: string;
 	/** Additional source lines exposed as `[data-md-line]` sub-anchors inside
 	 *  `html` — list items, table rows, code-block lines. Empty for blocks with
@@ -111,10 +118,20 @@ export function renderMarkdownBlocks(src: string, opts: RenderOptions = {}): Ren
 
 	for (const token of tokens) {
 		const startLine = line;
-		const rawNewlines = countNewlines((token as { raw?: string }).raw);
+		const raw = (token as { raw?: string }).raw ?? '';
+		const rawNewlines = countNewlines(raw);
 		line += rawNewlines;
 
 		if (token.type === 'space') continue;
+
+		// Strip trailing blank lines (the separator between this block and the
+		// next) so endLine points at the block's last *content* source line.
+		// `line` has already advanced past the separator above; that's fine for
+		// the next iteration but we don't want those blank lines counted into
+		// this block's range.
+		const trimmedRaw = raw.replace(/\n*$/, '');
+		const contentLines = trimmedRaw === '' ? 1 : countNewlines(trimmedRaw) + 1;
+		const endLine = startLine + Math.max(0, contentLines - 1);
 		if (
 			opts.stripLeadingH1 &&
 			!skippedH1 &&
@@ -148,6 +165,7 @@ export function renderMarkdownBlocks(src: string, opts: RenderOptions = {}): Ren
 
 		blocks.push({
 			line: startLine,
+			endLine,
 			html: sanitize(html),
 			subLines,
 			kind
@@ -188,6 +206,19 @@ function linkButtonHtml(line: number, extraClass = ''): string {
 	return (
 		`<a href="#L${line}" class="${cls}" data-md-link="${line}" tabindex="-1" ` +
 		`aria-label="Link to line ${line}" title="Copy link to line ${line}">¶</a>`
+	);
+}
+
+// Sub-anchor [~] button — opens an inline source editor on the target line so
+// the viewer can propose a textual replacement without going through the
+// comment composer. Same visibility rules as [+] (hidden when signed-out via
+// the `.can-comment` ancestor class). Click handling is delegated at the
+// article level alongside the [+] handler.
+function editButtonHtml(line: number, extraClass = ''): string {
+	const cls = `md-edit-btn md-sub-edit-btn${extraClass ? ' ' + extraClass : ''}`;
+	return (
+		`<button type="button" class="${cls}" data-md-edit="${line}" tabindex="-1" ` +
+		`aria-label="Suggest an edit to line ${line}" title="Suggest an edit to line ${line}">[~]</button>`
 	);
 }
 
@@ -323,7 +354,11 @@ function annotateListInto(
 
 		return {
 			open: addSubAttrs(openTag, itemLine),
-			inner: linkButtonHtml(itemLine) + commentButtonHtml(itemLine) + processedInner
+			inner:
+				linkButtonHtml(itemLine) +
+				commentButtonHtml(itemLine) +
+				editButtonHtml(itemLine) +
+				processedInner
 		};
 	});
 	if (remapped == null) return null;
@@ -436,7 +471,7 @@ function annotateTable(
 		// against the row from a real positioned container — a <tr> isn't
 		// reliable for absolutely-positioned descendants.
 		const cellMatch = inner.match(/^\s*<(td|th)\b[^>]*>/i);
-		const buttons = linkButtonHtml(rowLine) + commentButtonHtml(rowLine);
+		const buttons = linkButtonHtml(rowLine) + commentButtonHtml(rowLine) + editButtonHtml(rowLine);
 		const innerWithBtn = cellMatch
 			? inner.slice(0, cellMatch[0].length) + buttons + inner.slice(cellMatch[0].length)
 			: buttons + inner;
@@ -495,6 +530,7 @@ function annotateCode(
 			`<span class="md-sub md-code-line" data-md-line="${lineNum}" style="--md-li: ${i}">` +
 			linkButtonHtml(lineNum, 'md-sub-link-code') +
 			commentButtonHtml(lineNum, 'md-sub-btn-code') +
+			editButtonHtml(lineNum, 'md-sub-edit-btn-code') +
 			rawLine +
 			`</span>`
 		);
