@@ -20,6 +20,11 @@
 						"format": "at-uri",
 						"description": "AT-URI of the fyi.requested.document the thread belongs to. Stored alongside the thread ref so readers can list resolutions by document without first hydrating every comment."
 					},
+					"appliedIn": {
+						"type": "ref",
+						"ref": "com.atproto.repo.strongRef",
+						"description": "Strong ref to the fyi.requested.documentVersion that incorporated the root comment's suggestion. Only set when the resolution is the result of the document author applying a suggested edit — the version it points at is the immediate successor produced by that apply. Absent on plain resolutions and on resolutions of non-suggestion threads. Readers may use this to render 'applied' instead of 'resolved'."
+					},
 					"createdAt": {
 						"type": "string",
 						"format": "datetime",

@@ -4,6 +4,7 @@ import {
 	COMMENT_NSID,
 	THREAD_RESOLUTION_NSID,
 	type CommentRecord,
+	type CommentSuggestion,
 	type StrongRef,
 	type ThreadResolutionRecord
 } from './lexicons';
@@ -35,7 +36,7 @@ export async function createComment(
 		version: StrongRef;
 	},
 	body: string,
-	options: { line?: number; parent?: StrongRef } = {}
+	options: { line?: number; parent?: StrongRef; suggestion?: CommentSuggestion } = {}
 ): Promise<{ uri: string; cid: string }> {
 	const record: CommentRecord = {
 		document: target.documentUri,
@@ -45,6 +46,7 @@ export async function createComment(
 	};
 	if (options.line != null) record.line = options.line;
 	if (options.parent) record.parent = options.parent;
+	if (options.suggestion) record.suggestion = options.suggestion;
 
 	const res = await agent.com.atproto.repo.createRecord({
 		repo: did,
@@ -199,6 +201,67 @@ export function resolveLineShift(
 	return { kind: 'lost', from: originalLine, text: oldText };
 }
 
+// ---------- suggestion anchors ----------
+//
+// Suggestions anchor to a `before` + `target` + `after` text window rather than
+// to a line number, so applying one suggestion (which mutates line offsets)
+// doesn't invalidate the others. Anchors are built at write time from the
+// pinned version's body and resolved against the current body at apply time.
+
+// Default amount of surrounding context (in characters, not graphemes —
+// matching the lexicon's maxLength bound) captured on each side of the target.
+// Enough to make most anchors unique without bloating records; expand if the
+// match isn't unique at write time.
+const SUGGESTION_CONTEXT = 48;
+
+// Builds an anchor for replacing a single line. Captures the line text as
+// `target` and up to SUGGESTION_CONTEXT chars on either side from the
+// surrounding body (including the separating newlines). Replacement is
+// passed through verbatim.
+export function buildSuggestionAnchor(
+	body: string,
+	line: number,
+	replacement: string
+): CommentSuggestion {
+	const lines = body.split('\n');
+	const idx = line - 1;
+	const target = lines[idx] ?? '';
+	const beforeFull = idx <= 0 ? '' : lines.slice(0, idx).join('\n') + '\n';
+	const afterFull = idx >= lines.length - 1 ? '' : '\n' + lines.slice(idx + 1).join('\n');
+	const before = beforeFull.slice(-SUGGESTION_CONTEXT);
+	const after = afterFull.slice(0, SUGGESTION_CONTEXT);
+	return { before, target, after, replacement };
+}
+
+// Locates the suggestion in `body`. Returns the span of `target` iff the
+// combined needle (before+target+after) occurs exactly once; null otherwise
+// (no match or multiple matches — both block automatic apply).
+export function findSuggestionAnchor(
+	body: string,
+	sugg: CommentSuggestion
+): { start: number; end: number } | null {
+	// An all-empty target with empty context is meaningless — refuse outright
+	// rather than pretending to match the empty string at offset 0.
+	if (sugg.target.length === 0 && sugg.before.length === 0 && sugg.after.length === 0) {
+		return null;
+	}
+	const needle = sugg.before + sugg.target + sugg.after;
+	const first = body.indexOf(needle);
+	if (first === -1) return null;
+	if (body.indexOf(needle, first + 1) !== -1) return null;
+	const start = first + sugg.before.length;
+	return { start, end: start + sugg.target.length };
+}
+
+// Produces the body that results from applying `sugg` to `body`. Throws if the
+// suggestion no longer anchors uniquely — callers should gate the action on
+// `findSuggestionAnchor` first so the error path is unreachable in normal use.
+export function applySuggestion(body: string, sugg: CommentSuggestion): string {
+	const loc = findSuggestionAnchor(body, sugg);
+	if (!loc) throw new Error('Suggestion no longer anchors uniquely to the current document.');
+	return body.slice(0, loc.start) + sugg.replacement + body.slice(loc.end);
+}
+
 // ---------- threading ----------
 
 export type Thread = {
@@ -261,13 +324,15 @@ export async function createResolution(
 	agent: Agent,
 	did: string,
 	thread: StrongRef,
-	documentUri: string
+	documentUri: string,
+	options: { appliedIn?: StrongRef } = {}
 ): Promise<{ uri: string; cid: string }> {
 	const record: ThreadResolutionRecord = {
 		thread,
 		document: documentUri,
 		createdAt: new Date().toISOString()
 	};
+	if (options.appliedIn) record.appliedIn = options.appliedIn;
 	const res = await agent.com.atproto.repo.createRecord({
 		repo: did,
 		collection: THREAD_RESOLUTION_NSID,

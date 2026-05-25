@@ -36,11 +36,47 @@
 						"ref": "com.atproto.repo.strongRef",
 						"description": "Strong ref to a parent fyi.requested.comment, forming a reply thread. Absent for top-level comments. Reserved for the threading feature — current UI does not yet render replies, but the field is in the schema from day one to avoid migration."
 					},
+					"suggestion": {
+						"type": "ref",
+						"ref": "#suggestion",
+						"description": "Optional inline edit suggestion. When present, the comment proposes replacing `target` (uniquely anchored by `before` + `target` + `after` in the pinned version's body) with `replacement`. The document author may apply the suggestion as a new version; rendering otherwise is informational. Anchoring is text-based rather than line-based so that applying earlier suggestions doesn't invalidate later ones — each apply just re-anchors against the new body."
+					},
 					"createdAt": {
 						"type": "string",
 						"format": "datetime",
 						"description": "When the comment was written."
 					}
+				}
+			}
+		},
+		"suggestion": {
+			"type": "object",
+			"description": "A textual replacement proposal anchored by surrounding context. To apply, locate `before` + `target` + `after` in the current body — if the match is unique, replace the `target` span with `replacement`. The before/after context is captured at write time from the pinned version's body and is bounded so the record stays small.",
+			"required": ["before", "target", "after", "replacement"],
+			"properties": {
+				"before": {
+					"type": "string",
+					"maxLength": 1024,
+					"maxGraphemes": 512,
+					"description": "Body text immediately preceding `target`. Provides anchoring context; may be empty when the target is at the start of the document."
+				},
+				"target": {
+					"type": "string",
+					"maxLength": 40000,
+					"maxGraphemes": 20000,
+					"description": "The exact body text the suggestion proposes to replace. Captured verbatim from the pinned version."
+				},
+				"after": {
+					"type": "string",
+					"maxLength": 1024,
+					"maxGraphemes": 512,
+					"description": "Body text immediately following `target`. Provides anchoring context; may be empty when the target is at the end of the document."
+				},
+				"replacement": {
+					"type": "string",
+					"maxLength": 40000,
+					"maxGraphemes": 20000,
+					"description": "What the commenter proposes to replace `target` with. May be empty (a deletion suggestion)."
 				}
 			}
 		}

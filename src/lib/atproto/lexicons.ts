@@ -26,6 +26,13 @@ export type DocumentVersionRecord = {
 	previousVersion?: StrongRef;
 };
 
+export type CommentSuggestion = {
+	before: string;
+	target: string;
+	after: string;
+	replacement: string;
+};
+
 export type CommentRecord = {
 	$type?: typeof COMMENT_NSID;
 	document: string;
@@ -33,6 +40,7 @@ export type CommentRecord = {
 	line?: number;
 	body: string;
 	parent?: StrongRef;
+	suggestion?: CommentSuggestion;
 	createdAt: string;
 };
 
@@ -40,5 +48,6 @@ export type ThreadResolutionRecord = {
 	$type?: typeof THREAD_RESOLUTION_NSID;
 	thread: StrongRef;
 	document: string;
+	appliedIn?: StrongRef;
 	createdAt: string;
 };

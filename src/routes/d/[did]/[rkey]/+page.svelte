@@ -2,18 +2,21 @@
 	import { onMount, untrack } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import type { Agent } from '@atproto/api';
 	import { auth } from '$lib/atproto/auth.svelte';
-	import { listVersionChain } from '$lib/atproto/documents';
+	import { listVersionChain, saveNewVersion } from '$lib/atproto/documents';
 	import type { LoadedDocument } from '$lib/atproto/documents';
 	import {
+		applySuggestion,
 		authoritativeResolution,
+		buildSuggestionAnchor,
 		createComment,
 		createResolution,
 		deleteResolution,
 		describeCommentVersionState,
+		findSuggestionAnchor,
 		foldThreads,
 		listAllCommentsOn,
 		listAllResolutionsOn,
@@ -23,7 +26,7 @@
 		type LoadedResolution,
 		type Thread
 	} from '$lib/atproto/comments';
-	import type { StrongRef } from '$lib/atproto/lexicons';
+	import type { CommentSuggestion, StrongRef } from '$lib/atproto/lexicons';
 	import { fetchProfile, type Profile } from '$lib/atproto/profile';
 	import { renderMarkdown, renderMarkdownBlocks } from '$lib/markdown';
 	import { recordView } from '$lib/viewed-docs';
@@ -71,6 +74,19 @@
 	let composerBody = $state('');
 	let composerPosting = $state(false);
 	let composerError = $state<string | null>(null);
+
+	// Suggest-edit mode on the composer. Only meaningful when `composer.line` is
+	// non-null and we aren't replying — anchoring a textual replacement requires
+	// a specific source line on the pinned version's body. `replacement` is the
+	// textarea contents; we build the before/target/after anchor from the
+	// current body + line at submit time.
+	let composerMode = $state<'comment' | 'suggest'>('comment');
+	let composerReplacement = $state('');
+
+	// Per-thread state for the author's "Apply" action on a suggestion. Mirrors
+	// the resolveBusy/Error pair next door so the surfaces look the same.
+	const applyBusy = new SvelteSet<string>();
+	const applyError = new SvelteMap<string, string>();
 
 	// Viewport-driven layout mode. Above the breakpoint, line comments live in
 	// a right-side rail anchored to each block. Below it, they collapse into
@@ -124,6 +140,10 @@
 			composer = null;
 			composerBody = '';
 			composerError = null;
+			composerMode = 'comment';
+			composerReplacement = '';
+			applyBusy.clear();
+			applyError.clear();
 			expandedLines.clear();
 			activeLine = null;
 			linkedLine = null;
@@ -301,6 +321,20 @@
 		const myDid = auth.did;
 		if (!myDid) return false;
 		return myDid === thread.root.did || myDid === documentAuthorDid;
+	}
+
+	// Whether the signed-in user can apply a thread's suggestion right now.
+	// Author-only, the thread root must carry a suggestion, and the anchor must
+	// still resolve uniquely in the current body — otherwise an earlier apply
+	// (or any edit) has perturbed the surrounding context and the user has to
+	// fall back to applying by hand.
+	function canApply(thread: Thread): boolean {
+		const myDid = auth.did;
+		if (!myDid || myDid !== documentAuthorDid) return false;
+		const sugg = thread.root.value.suggestion;
+		const body = loaded?.version?.value.body;
+		if (!sugg || !body) return false;
+		return findSuggestionAnchor(body, sugg) != null;
 	}
 
 	// Items rendered in the desktop rail, in vertical order. Each item is
@@ -621,6 +655,8 @@
 		composer = { line, parent: null, replyToHandle: null };
 		composerBody = '';
 		composerError = null;
+		composerMode = 'comment';
+		composerReplacement = '';
 		// On mobile, expand the inline thread so the composer is visible. Sub-
 		// anchor composers (e.g., on a specific list item) expand the parent
 		// block — expandedLines is keyed by block start line.
@@ -642,6 +678,8 @@
 		};
 		composerBody = '';
 		composerError = null;
+		composerMode = 'comment';
+		composerReplacement = '';
 		if (!isRail && target.value.line != null) {
 			const blockLine = subToBlock.get(target.value.line) ?? target.value.line;
 			expandedLines.add(blockLine);
@@ -652,6 +690,22 @@
 		composer = null;
 		composerBody = '';
 		composerError = null;
+		composerMode = 'comment';
+		composerReplacement = '';
+	}
+
+	// Toggle the composer into suggest mode. Prefills the replacement textarea
+	// with the current line's text so the user edits a copy, the same way
+	// GitHub's "Add a suggestion" populates the suggestion block.
+	function toggleSuggestMode() {
+		if (!composer || composer.line == null || composer.parent) return;
+		if (composerMode === 'suggest') {
+			composerMode = 'comment';
+			composerReplacement = '';
+			return;
+		}
+		composerMode = 'suggest';
+		composerReplacement = getRawLineText(loaded?.version?.value.body, composer.line);
 	}
 
 	function toggleResolvedExpand(rootUri: string) {
@@ -677,6 +731,44 @@
 			resolveError.set(rootUri, msg);
 		} finally {
 			resolveBusy.delete(rootUri);
+		}
+	}
+
+	// Author-only "Apply" for suggestion threads. Three steps, all on the
+	// document author's repo: re-resolve the suggestion's text anchor against
+	// the *current* body (so applying multiple suggestions composes — each
+	// subsequent apply re-anchors against the updated body), saveNewVersion
+	// with the patched body, and createResolution with `appliedIn` set so
+	// readers can render "applied in <vN>" instead of plain "resolved". On
+	// success we invalidateAll() to pick up the new currentVersion in the
+	// page data and reload the comment list to surface the new resolution.
+	async function applyThreadSuggestion(thread: Thread) {
+		const agent = auth.agent;
+		const myDid = auth.did;
+		const doc = loaded;
+		if (!agent || !myDid || !doc?.version) return;
+		if (myDid !== doc.did) return; // author-only
+		const sugg = thread.root.value.suggestion;
+		if (!sugg) return;
+		const rootUri = thread.root.uri;
+		if (applyBusy.has(rootUri)) return;
+		applyBusy.add(rootUri);
+		applyError.delete(rootUri);
+		try {
+			const patched = applySuggestion(doc.version.value.body, sugg);
+			const { versionUri, versionCid } = await saveNewVersion(agent, myDid, doc, patched);
+			await createResolution(
+				agent,
+				myDid,
+				{ uri: thread.root.uri, cid: thread.root.cid },
+				doc.uri,
+				{ appliedIn: { uri: versionUri, cid: versionCid } }
+			);
+			await invalidateAll();
+		} catch (err) {
+			applyError.set(rootUri, err instanceof Error ? err.message : String(err));
+		} finally {
+			applyBusy.delete(rootUri);
 		}
 	}
 
@@ -766,12 +858,25 @@
 			composerError = 'Comment cannot be empty.';
 			return;
 		}
+
+		const isSuggest = composerMode === 'suggest' && current.line != null && !current.parent;
+		let suggestion: CommentSuggestion | undefined;
+		if (isSuggest && current.line != null) {
+			const target = getRawLineText(doc.version.value.body, current.line);
+			if (composerReplacement === target) {
+				composerError = 'Suggested edit is identical to the original line.';
+				return;
+			}
+			suggestion = buildSuggestionAnchor(doc.version.value.body, current.line, composerReplacement);
+		}
+
 		composerPosting = true;
 		composerError = null;
 		try {
-			const opts: { line?: number; parent?: StrongRef } = {};
+			const opts: { line?: number; parent?: StrongRef; suggestion?: CommentSuggestion } = {};
 			if (current.line != null) opts.line = current.line;
 			if (current.parent) opts.parent = current.parent;
+			if (suggestion) opts.suggestion = suggestion;
 			await createComment(
 				agent,
 				myDid,
@@ -816,6 +921,13 @@
 	function getLineText(body: string | undefined, line: number | null): string {
 		if (!body || line == null) return '';
 		return (body.split('\n')[line - 1] ?? '').trim();
+	}
+
+	// Verbatim line, without trimming. Used to seed the suggestion replacement
+	// textarea so original indentation is preserved when the user edits.
+	function getRawLineText(body: string | undefined, line: number | null): string {
+		if (!body || line == null) return '';
+		return body.split('\n')[line - 1] ?? '';
 	}
 
 	function formatRelative(iso: string): string {
@@ -1133,18 +1245,59 @@
 {/if}
 
 {#snippet inlineComposer()}
+	{@const canSuggest = composer != null && composer.line != null && !composer.parent}
+	{@const targetText = getRawLineText(loaded?.version?.value.body, composer?.line ?? null)}
+	{@const isSuggest = canSuggest && composerMode === 'suggest'}
 	<form class="composer composer-inline" onsubmit={submitComment}>
 		<header class="composer-header">
 			{#if composer?.parent}
 				<span class="muted">Replying to @{composer.replyToHandle ?? '…'}</span>
+			{:else if isSuggest}
+				<span class="anchor-tag anchor-tag-suggest">edit</span>
+				<span class="muted">Suggesting an edit to this line</span>
 			{:else if composer?.line != null}
 				<span class="muted">Commenting on this line</span>
 			{:else}
 				<span class="anchor-tag">doc</span>
 				<span class="muted">Commenting on the whole document</span>
 			{/if}
+			{#if canSuggest}
+				<button
+					type="button"
+					class="suggest-toggle"
+					aria-pressed={isSuggest}
+					onclick={toggleSuggestMode}
+				>
+					{isSuggest ? '[ × suggesting ]' : '[ + suggest edit ]'}
+				</button>
+			{/if}
 		</header>
-		<CommentEditor bind:value={composerBody} onEscape={onComposerEscape} onSubmit={postComment} />
+		{#if isSuggest}
+			<div class="suggestion-edit">
+				<div class="suggestion-edit-row">
+					<span class="suggestion-edit-label suggestion-edit-label-from">From</span>
+					<code class="suggestion-edit-from">{targetText || '(empty line)'}</code>
+				</div>
+				<div class="suggestion-edit-row">
+					<span class="suggestion-edit-label suggestion-edit-label-to">To</span>
+					<textarea
+						class="suggestion-edit-to"
+						bind:value={composerReplacement}
+						spellcheck="false"
+						rows="2"
+						placeholder="Proposed replacement"
+					></textarea>
+				</div>
+			</div>
+		{/if}
+		<CommentEditor
+			bind:value={composerBody}
+			placeholder={isSuggest
+				? 'Why this edit? (markdown supported)'
+				: 'Write a comment in markdown…'}
+			onEscape={onComposerEscape}
+			onSubmit={postComment}
+		/>
 		{#if composerError}
 			<p class="error">{composerError}</p>
 		{/if}
@@ -1154,7 +1307,9 @@
 					? '[ posting… ]'
 					: composer?.parent
 						? '[ post reply ]'
-						: '[ post comment ]'}
+						: isSuggest
+							? '[ post suggestion ]'
+							: '[ post comment ]'}
 			</button>
 			<button type="button" class="bracket-btn" onclick={closeComposer} disabled={composerPosting}>
 				[ cancel ]
@@ -1200,7 +1355,8 @@
 			<div class="resolved-summary">
 				<span class="resolved-mark" aria-hidden="true">✓</span>
 				<span class="resolved-text">
-					Resolved by <strong>@{resolverProfile?.handle ?? resolution.did}</strong>
+					{resolution.value.appliedIn ? 'Applied by' : 'Resolved by'}
+					<strong>@{resolverProfile?.handle ?? resolution.did}</strong>
 					{#if replyCount > 0}
 						<span class="resolved-sep">·</span>
 						{replyCount}
@@ -1235,7 +1391,8 @@
 				<div class="resolved-banner">
 					<span class="resolved-mark" aria-hidden="true">✓</span>
 					<span class="resolved-text">
-						Resolved by <strong>@{resolverProfile?.handle ?? resolution.did}</strong>
+						{resolution.value.appliedIn ? 'Applied by' : 'Resolved by'}
+						<strong>@{resolverProfile?.handle ?? resolution.did}</strong>
 					</span>
 					<div class="resolved-actions">
 						<button
@@ -1260,7 +1417,20 @@
 			{/if}
 			{@render commentCard(thread.root, true, isResolved)}
 			{#if !isResolved}
+				{@const applying = applyBusy.has(thread.root.uri)}
+				{@const applyErr = applyError.get(thread.root.uri)}
+				{@const showApply = thread.root.value.suggestion != null && canApply(thread)}
 				<div class="comment-actions">
+					{#if showApply}
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm bracket-btn-primary"
+							disabled={applying}
+							onclick={() => applyThreadSuggestion(thread)}
+						>
+							{applying ? '[ applying… ]' : '[ apply suggestion ]'}
+						</button>
+					{/if}
 					<button
 						type="button"
 						class="bracket-btn bracket-btn-sm"
@@ -1280,6 +1450,9 @@
 					{/if}
 					{#if err}
 						<span class="error inline-error">{err}</span>
+					{/if}
+					{#if applyErr}
+						<span class="error inline-error">{applyErr}</span>
 					{/if}
 				</div>
 			{/if}
@@ -1307,6 +1480,19 @@
 	</div>
 {/snippet}
 
+{#snippet suggestionDiff(sugg: CommentSuggestion)}
+	<div class="suggestion-diff" aria-label="Suggested edit">
+		<div class="suggestion-row suggestion-row-from">
+			<span class="suggestion-mark" aria-hidden="true">−</span>
+			<code class="suggestion-text">{sugg.target || '(empty line)'}</code>
+		</div>
+		<div class="suggestion-row suggestion-row-to">
+			<span class="suggestion-mark" aria-hidden="true">+</span>
+			<code class="suggestion-text">{sugg.replacement || '(deletion)'}</code>
+		</div>
+	</div>
+{/snippet}
+
 {#snippet commentCard(c: LoadedComment, isRoot: boolean, threadResolved: boolean)}
 	{@const state = commentStates.get(c.uri)}
 	{@const profile = commenterProfiles.get(c.did)}
@@ -1322,10 +1508,16 @@
 			<time datetime={c.value.createdAt}>
 				{new Date(c.value.createdAt).toLocaleString()}
 			</time>
+			{#if c.value.suggestion}
+				<span class="suggestion-badge">suggested edit</span>
+			{/if}
 			{#if state && state.kind !== 'current'}
 				<span class="stale-note">on earlier version</span>
 			{/if}
 		</div>
+		{#if c.value.suggestion}
+			{@render suggestionDiff(c.value.suggestion)}
+		{/if}
 		<div class="comment-body prose prose-sm">
 			<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
 			{@html renderMarkdown(c.value.body)}
@@ -1373,7 +1565,8 @@
 			<div class="resolved-summary">
 				<span class="resolved-mark" aria-hidden="true">✓</span>
 				<span class="resolved-text">
-					Resolved by <strong>@{resolverProfile?.handle ?? resolution.did}</strong>
+					{resolution.value.appliedIn ? 'Applied by' : 'Resolved by'}
+					<strong>@{resolverProfile?.handle ?? resolution.did}</strong>
 					{#if replyCount > 0}
 						<span class="resolved-sep">·</span>
 						{replyCount}
@@ -1408,7 +1601,8 @@
 				<div class="resolved-banner">
 					<span class="resolved-mark" aria-hidden="true">✓</span>
 					<span class="resolved-text">
-						Resolved by <strong>@{resolverProfile?.handle ?? resolution.did}</strong>
+						{resolution.value.appliedIn ? 'Applied by' : 'Resolved by'}
+						<strong>@{resolverProfile?.handle ?? resolution.did}</strong>
 					</span>
 					<div class="resolved-actions">
 						<button
@@ -1433,7 +1627,20 @@
 			{/if}
 			{@render commentBody(thread.root, true, isResolved)}
 			{#if !isResolved}
+				{@const applying = applyBusy.has(thread.root.uri)}
+				{@const applyErr = applyError.get(thread.root.uri)}
+				{@const showApply = thread.root.value.suggestion != null && canApply(thread)}
 				<div class="comment-actions rail-actions">
+					{#if showApply}
+						<button
+							type="button"
+							class="bracket-btn bracket-btn-sm bracket-btn-primary"
+							disabled={applying}
+							onclick={() => applyThreadSuggestion(thread)}
+						>
+							{applying ? '[ applying… ]' : '[ apply suggestion ]'}
+						</button>
+					{/if}
 					<button
 						type="button"
 						class="bracket-btn bracket-btn-sm"
@@ -1453,6 +1660,9 @@
 					{/if}
 					{#if err}
 						<span class="error inline-error">{err}</span>
+					{/if}
+					{#if applyErr}
+						<span class="error inline-error">{applyErr}</span>
 					{/if}
 				</div>
 			{/if}
@@ -1494,10 +1704,16 @@
 			<time datetime={c.value.createdAt} class="rail-comment-time">
 				{formatRelative(c.value.createdAt)}
 			</time>
+			{#if c.value.suggestion}
+				<span class="suggestion-badge">suggested edit</span>
+			{/if}
 			{#if state && state.kind !== 'current'}
 				<span class="stale-note">on earlier version</span>
 			{/if}
 		</div>
+		{#if c.value.suggestion}
+			{@render suggestionDiff(c.value.suggestion)}
+		{/if}
 		<div class="rail-comment-body prose prose-sm">
 			<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
 			{@html renderMarkdown(c.value.body)}
@@ -2744,5 +2960,165 @@
 			opacity: 1;
 			transform: translate(-50%, 0);
 		}
+	}
+
+	/* --- Suggested edits ---
+	   A "suggestion" is a comment that carries a textual replacement anchored
+	   by surrounding context. Visually it reads as a two-row diff (− original,
+	   + replacement) sandwiched between the comment meta and the body. The
+	   author sees an extra [ apply suggestion ] action when the anchor still
+	   matches the current document; everyone else just reads the diff. */
+
+	.suggestion-badge {
+		font-size: var(--text-2xs);
+		letter-spacing: var(--track-caps);
+		text-transform: uppercase;
+		padding: 1px 6px;
+		border: var(--border-thin) solid var(--addition);
+		color: var(--addition);
+		font-style: normal;
+		font-weight: 500;
+	}
+	.comment-meta .suggestion-badge::before,
+	.rail-comment-meta .suggestion-badge::before {
+		content: '· ';
+		color: var(--ink-4);
+		margin-right: 4px;
+	}
+
+	.suggestion-diff {
+		display: flex;
+		flex-direction: column;
+		margin: var(--space-2) 0 var(--space-3);
+		border: var(--border-thin) solid var(--rule);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		line-height: var(--leading-snug);
+		overflow: hidden;
+	}
+	.suggestion-row {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-2);
+		padding: 4px var(--space-3);
+		min-width: 0;
+	}
+	.suggestion-row-from {
+		background: var(--deletion-fade);
+		color: var(--ink);
+		border-bottom: var(--border-thin) solid var(--rule);
+	}
+	.suggestion-row-to {
+		background: var(--addition-fade);
+		color: var(--ink);
+	}
+	.suggestion-mark {
+		flex: 0 0 1ch;
+		font-weight: 700;
+		user-select: none;
+		text-align: center;
+	}
+	.suggestion-row-from .suggestion-mark {
+		color: var(--deletion);
+	}
+	.suggestion-row-to .suggestion-mark {
+		color: var(--addition);
+	}
+	.suggestion-text {
+		flex: 1 1 auto;
+		min-width: 0;
+		background: transparent;
+		border: 0;
+		padding: 0;
+		white-space: pre-wrap;
+		word-break: break-word;
+		letter-spacing: var(--track-tight);
+	}
+
+	/* --- Composer: suggest-edit affordance --- */
+	.anchor-tag-suggest {
+		border-color: var(--addition);
+		color: var(--addition);
+	}
+	.suggest-toggle {
+		margin-left: auto;
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		letter-spacing: var(--track-tight);
+		color: var(--ink-3);
+		background: transparent;
+		border: 0;
+		padding: 0;
+		cursor: pointer;
+		transition: color var(--dur-fast) var(--ease-out-quart);
+	}
+	.suggest-toggle:hover,
+	.suggest-toggle[aria-pressed='true'] {
+		color: var(--addition);
+	}
+
+	.suggestion-edit {
+		display: flex;
+		flex-direction: column;
+		border: var(--border-thin) solid var(--rule);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		line-height: var(--leading-snug);
+		overflow: hidden;
+	}
+	.suggestion-edit-row {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-2);
+		padding: 4px var(--space-3);
+	}
+	.suggestion-edit-row + .suggestion-edit-row {
+		border-top: var(--border-thin) solid var(--rule);
+	}
+	.suggestion-edit-row:first-child {
+		background: var(--deletion-fade);
+	}
+	.suggestion-edit-row:last-child {
+		background: var(--addition-fade);
+	}
+	.suggestion-edit-label {
+		flex: 0 0 3ch;
+		font-size: var(--text-2xs);
+		letter-spacing: var(--track-caps);
+		text-transform: uppercase;
+		padding-top: 2px;
+	}
+	.suggestion-edit-label-from {
+		color: var(--deletion);
+	}
+	.suggestion-edit-label-to {
+		color: var(--addition);
+	}
+	.suggestion-edit-from {
+		flex: 1 1 auto;
+		min-width: 0;
+		background: transparent;
+		border: 0;
+		padding: 0;
+		white-space: pre-wrap;
+		word-break: break-word;
+		letter-spacing: var(--track-tight);
+		color: var(--ink-2);
+	}
+	.suggestion-edit-to {
+		flex: 1 1 auto;
+		min-width: 0;
+		font: inherit;
+		letter-spacing: var(--track-tight);
+		color: var(--ink);
+		background: var(--surface);
+		border: var(--border-thin) solid var(--rule);
+		padding: 4px 6px;
+		resize: vertical;
+	}
+	.suggestion-edit-to:focus {
+		outline: var(--border-thick) solid var(--addition);
+		outline-offset: -2px;
+		border-color: var(--addition);
 	}
 </style>
