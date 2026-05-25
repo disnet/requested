@@ -197,6 +197,26 @@ export type TocEntry = {
 	number: string;
 };
 
+// marked stores `heading.text` as the raw inline source — `## The **foo** API`
+// keeps the literal `**` markers. The parsed inline tree on `heading.tokens` is
+// what actually drops the markers, so we walk that tree and concatenate each
+// leaf token's `.text` to recover the rendered plain text. Codespans contribute
+// their body without backticks; links/strong/em recurse through their nested
+// `tokens`.
+function inlineTokensToPlainText(tokens: Token[] | undefined): string {
+	if (!tokens) return '';
+	let out = '';
+	for (const t of tokens) {
+		const children = (t as { tokens?: Token[] }).tokens;
+		if (children && children.length > 0) {
+			out += inlineTokensToPlainText(children);
+		} else if (typeof (t as { text?: unknown }).text === 'string') {
+			out += (t as { text: string }).text;
+		}
+	}
+	return out;
+}
+
 // Walk the lexer output, surface every heading as a TOC entry, and assign each
 // a number that matches the body's CSS counter scheme exactly (see the
 // `.prose h2/h3/h4::before` rules on the reader + version-view pages). Slugs
@@ -219,6 +239,9 @@ export function extractToc(
 		if (token.type !== 'heading') continue;
 		const heading = token as Tokens.Heading;
 		const depth = heading.depth;
+		// Slug uses `heading.text` to stay byte-identical with the renderer's
+		// heading-id slug (see `createRenderer` above), so TOC `href`s always
+		// land on the matching `id`.
 		const slug = uniqueSlug(slugify(heading.text), seen);
 		if (depth === 2) {
 			counters[2] += 1;
@@ -235,7 +258,12 @@ export function extractToc(
 		if (depth === 2) number = `${counters[2]}`;
 		else if (depth === 3) number = `${counters[2]}.${counters[3]}`;
 		else if (depth === 4) number = `${counters[2]}.${counters[3]}.${counters[4]}`;
-		entries.push({ depth, text: heading.text, slug, number });
+		entries.push({
+			depth,
+			text: inlineTokensToPlainText(heading.tokens),
+			slug,
+			number
+		});
 	}
 	return entries;
 }
