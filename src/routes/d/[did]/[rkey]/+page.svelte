@@ -29,6 +29,7 @@
 	import type { CommentSuggestion, StrongRef } from '$lib/atproto/lexicons';
 	import { fetchProfile, type Profile } from '$lib/atproto/profile';
 	import { renderMarkdown, renderMarkdownBlocks } from '$lib/markdown';
+	import { downloadMarkdown } from '$lib/export';
 	import { recordView } from '$lib/viewed-docs';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
@@ -666,6 +667,11 @@
 		void goto(resolve('/'));
 	}
 
+	function onExport() {
+		if (!loaded?.version) return;
+		downloadMarkdown(loaded.value.title, loaded.version.value.body, loaded.rkey);
+	}
+
 	function tryOpenComposer(line: number | null) {
 		if (auth.status !== 'signed-in') {
 			gotoSignIn();
@@ -1129,6 +1135,9 @@
 				<nav class="meta-actions" aria-label="Document actions">
 					<a class="action" href={historyPath}>[ history ]</a>
 					<a class="action" href={diffPath}>[ diff ]</a>
+					<button type="button" class="action" disabled={!loaded?.version} onclick={onExport}>
+						[ export ]
+					</button>
 					{#if isOwner}
 						<a class="action" href={editPath}> [ edit ] </a>
 					{/if}

@@ -52,7 +52,7 @@ export type RenderedBlock = {
 	kind: 'simple' | 'list' | 'table' | 'code';
 };
 
-function slugify(text: string): string {
+export function slugify(text: string): string {
 	return text
 		.toLowerCase()
 		.trim()
