@@ -260,7 +260,7 @@
 		font-size: var(--text-base);
 		line-height: var(--leading-body);
 		color: var(--ink);
-		counter-reset: section;
+		counter-reset: l1 l2 l3;
 	}
 	.prose :global(h1),
 	.prose :global(h2),
@@ -274,36 +274,42 @@
 	}
 	.prose :global(h1) {
 		font-size: var(--text-2xl);
-		padding-bottom: var(--space-2);
-		border-bottom: var(--border-thin) solid var(--rule);
 	}
-	/* `h2` is the top of the body outline — see matching note in the reader
-	   page CSS. */
 	.prose :global(h2) {
 		font-size: var(--text-xl);
-		counter-reset: sub;
-	}
-	.prose :global(h2::before) {
-		content: counter(section) '. ';
-		counter-increment: section;
-		color: var(--ink-3);
-		margin-right: 0.5ch;
 	}
 	.prose :global(h3) {
 		font-size: var(--text-lg);
-		counter-reset: subsub;
 	}
-	.prose :global(h3::before) {
-		content: counter(section) '.' counter(sub) '. ';
-		counter-increment: sub;
+	/* Section numbering keyed on the normalized heading depth emitted by
+	   markdown.ts. See matching note in the reader page CSS. */
+	.prose :global([data-h-norm='1']) {
+		counter-reset: l2 l3;
+	}
+	.prose :global([data-h-norm='1']::before) {
+		content: counter(l1) '. ';
+		counter-increment: l1;
 		color: var(--ink-3);
 		margin-right: 0.5ch;
 	}
-	.prose :global(h4::before) {
-		content: counter(section) '.' counter(sub) '.' counter(subsub) '. ';
-		counter-increment: subsub;
+	.prose :global([data-h-norm='2']) {
+		counter-reset: l3;
+	}
+	.prose :global([data-h-norm='2']::before) {
+		content: counter(l1) '.' counter(l2) '. ';
+		counter-increment: l2;
 		color: var(--ink-3);
 		margin-right: 0.5ch;
+	}
+	.prose :global([data-h-norm='3']::before) {
+		content: counter(l1) '.' counter(l2) '.' counter(l3) '. ';
+		counter-increment: l3;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
+	}
+	.prose :global(h1[data-h-norm='1']) {
+		padding-bottom: var(--space-2);
+		border-bottom: var(--border-thin) solid var(--rule);
 	}
 	.prose :global(p),
 	.prose :global(ul),

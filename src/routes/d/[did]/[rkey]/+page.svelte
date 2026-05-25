@@ -227,7 +227,7 @@
 	}
 
 	onMount(() => {
-		const mq = window.matchMedia('(min-width: 1200px)');
+		const mq = window.matchMedia('(min-width: 1400px)');
 		isRail = mq.matches;
 		const onChange = (e: MediaQueryListEvent) => {
 			isRail = e.matches;
@@ -257,16 +257,26 @@
 		return map;
 	});
 
-	// Foldable sections. Each markdown heading (h1–h3) opens a section that
-	// contains every following block until the next heading of equal or
-	// shallower depth. The tree is recursive so a Reddit-style fold cascades
-	// through nested sub-sections. h4+ stay as plain blocks — they're rare
-	// enough that a fold ceiling avoids gutter conflicts with the per-line
-	// `[+]`/`[~]` affordances.
-	const FOLD_MAX_DEPTH = 3;
+	// Foldable sections. We renormalize heading depth so the shallowest level
+	// the author actually used becomes "1" — a doc that opens with `#` and one
+	// that opens with `##` both treat their top-level heading the same way.
+	// The top 3 normalized levels get fold UI; anything deeper stays as a plain
+	// block so the gutter affordances don't fight a nested fold rail.
+	const FOLD_MAX_NORM_DEPTH = 3;
+	const topHeadingDepth = $derived.by<number | null>(() => {
+		let min: number | null = null;
+		for (const b of renderedBlocks) {
+			if (b.headingDepth != null && (min == null || b.headingDepth < min)) {
+				min = b.headingDepth;
+			}
+		}
+		return min;
+	});
 	type DocSection = {
 		kind: 'section';
 		id: string;
+		/** Normalized depth (1-based): 1 = top-level for this doc, regardless of
+		 *  whether the author used `#` or `##` as their top-level heading. */
 		depth: number;
 		heading: RenderedBlock;
 		children: DocNode[];
@@ -280,22 +290,24 @@
 		const stack: Array<{ section: DocSection | null; children: DocNode[]; depth: number }> = [
 			{ section: null, children: root, depth: 0 }
 		];
+		const top = topHeadingDepth;
 		for (const block of renderedBlocks) {
-			const d = block.headingDepth;
-			if (d != null && d <= FOLD_MAX_DEPTH) {
-				while (stack.length > 1 && stack[stack.length - 1].depth >= d) {
+			const rawDepth = block.headingDepth;
+			const normDepth = top != null && rawDepth != null ? rawDepth - top + 1 : null;
+			if (normDepth != null && normDepth <= FOLD_MAX_NORM_DEPTH) {
+				while (stack.length > 1 && stack[stack.length - 1].depth >= normDepth) {
 					stack.pop();
 				}
 				const section: DocSection = {
 					kind: 'section',
 					id: `sec-${block.line}`,
-					depth: d,
+					depth: normDepth,
 					heading: block,
 					children: [],
 					bodyLines: new Set()
 				};
 				stack[stack.length - 1].children.push(section);
-				stack.push({ section, children: section.children, depth: d });
+				stack.push({ section, children: section.children, depth: normDepth });
 			} else {
 				stack[stack.length - 1].children.push({ kind: 'block', block });
 				for (let i = 1; i < stack.length; i++) {
@@ -319,19 +331,50 @@
 
 	// Whole-heading click as a fold shortcut. Skips when:
 	// - the click landed on something interactive (the gutter affordances ¶/[+]/[~],
-	//   the dedicated toggle, or any link inside the heading text);
+	//   or any link inside the heading text);
 	// - the click is inside the section body (only the heading row folds);
 	// - the user is finishing a text selection on the heading. Without the
 	//   selection guard, drag-to-select followed by mouseup would collapse the
 	//   section the user just tried to copy from.
+	// The section's own `[▾]`/`[▸]` glyph is injected inline into the heading
+	// element (so its float-right flows with the heading's first line), so we
+	// special-case `[data-section-toggle]` clicks to fold rather than letting
+	// the generic `button` filter swallow them.
 	function onSectionHeadClick(e: MouseEvent, sectionId: string) {
 		const target = e.target as HTMLElement | null;
 		if (!target) return;
+		if (target.closest('[data-section-toggle]')) {
+			toggleSection(sectionId);
+			return;
+		}
 		if (target.closest('button, a, input, select, textarea, summary, label')) return;
 		if (target.closest('.section-body')) return;
 		const sel = window.getSelection();
 		if (sel && !sel.isCollapsed) return;
 		toggleSection(sectionId);
+	}
+
+	// Splice the foldable section's disclosure toggle into the rendered heading
+	// HTML so the button inherits the heading's font-size and line-height —
+	// that lets the button's line-box match the heading's first line, and the
+	// glyph (in an inner span at `--text-xs`) baseline-aligns to the heading
+	// text automatically. The button is then positioned absolutely out into
+	// the right gutter via CSS. The inline-injected button has no Svelte click
+	// handler; clicks are caught by the section's delegated
+	// `onSectionHeadClick` via `data-section-toggle`.
+	function withSectionToggle(heading: RenderedBlock, sectionId: string, collapsed: boolean) {
+		const glyph = collapsed ? '[▸]' : '[▾]';
+		const label = collapsed
+			? `Expand section starting at line ${heading.line}`
+			: `Collapse section starting at line ${heading.line}`;
+		const title = collapsed ? 'Expand section' : 'Collapse section';
+		const btn =
+			`<button type="button" class="section-toggle" data-section-toggle="${sectionId}" ` +
+			`aria-expanded="${!collapsed}" aria-controls="${sectionId}-body" ` +
+			`aria-label="${label}" title="${title}">` +
+			`<span class="section-toggle-glyph">${glyph}</span></button>`;
+		const html = heading.html.replace(/<\/h([1-6])>(\s*)$/, `${btn}</h$1>$2`);
+		return { ...heading, html };
 	}
 
 	// Map of every line (block or sub-anchor) to the chain of section IDs that
@@ -1398,7 +1441,8 @@
 {#snippet renderSection(section: DocSection)}
 	{@const collapsed = collapsedSections.has(section.id)}
 	<!-- The whole-heading click is a mouse / touch shortcut for fold;
-	     keyboard accessibility is provided by `.section-toggle` below, so the
+	     keyboard accessibility is provided by the `.section-toggle` button
+	     injected inline into the heading by `withSectionToggle`, so the
 	     section element itself stays semantically inert (no role, no key
 	     handler). svelte-ignore covers the resulting a11y warnings. -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -1409,30 +1453,9 @@
 		data-section-id={section.id}
 		onclick={(e) => onSectionHeadClick(e, section.id)}
 	>
-		{@render renderBlock(section.heading)}
-		<button
-			type="button"
-			class="section-toggle"
-			aria-expanded={!collapsed}
-			aria-controls={`${section.id}-body`}
-			aria-label={collapsed
-				? `Expand section starting at line ${section.heading.line}`
-				: `Collapse section starting at line ${section.heading.line}`}
-			title={collapsed ? 'Expand section' : 'Collapse section'}
-			onclick={() => toggleSection(section.id)}
-		>
-			{collapsed ? '[▸]' : '[▾]'}
-		</button>
+		{@render renderBlock(withSectionToggle(section.heading, section.id, collapsed))}
 		{#if !collapsed}
 			<div class="section-body" id={`${section.id}-body`}>
-				<button
-					type="button"
-					class="section-fold-rail"
-					tabindex="-1"
-					aria-hidden="true"
-					title="Collapse section"
-					onclick={() => toggleSection(section.id)}
-				></button>
 				{#each section.children as child (child.kind === 'section' ? child.id : `b${child.block.line}`)}
 					{@render renderNode(child)}
 				{/each}
@@ -2080,7 +2103,7 @@
 	   mirrors the JS breakpoint in onMount. The grid is set up before the
 	   `<aside class="rail">` mounts and before comments arrive, so the
 	   article column doesn't reflow when either lands. */
-	@media (min-width: 1200px) {
+	@media (min-width: 1400px) {
 		.doc-shell {
 			max-width: calc(var(--col-body) + var(--space-7) + var(--rail-width));
 			display: grid;
@@ -2385,7 +2408,7 @@
 		font-size: var(--text-base);
 		line-height: var(--leading-body);
 		color: var(--ink);
-		counter-reset: section;
+		counter-reset: l1 l2 l3;
 	}
 	.prose :global(h1),
 	.prose :global(h2),
@@ -2400,42 +2423,51 @@
 	}
 	.prose :global(h1) {
 		font-size: var(--text-2xl);
-		padding-bottom: var(--space-2);
-		border-bottom: var(--border-thin) solid var(--rule);
 	}
-	/* The doc title is rendered as an `<h1>` outside `.prose` by the page
-	   header, so prose body sections conventionally start at `##` and the
-	   counter scheme tracks that. Authors who use `#` in the body get a
-	   styled but unnumbered heading. */
 	.prose :global(h2) {
 		font-size: var(--text-xl);
-		counter-reset: sub;
-	}
-	.prose :global(h2::before) {
-		content: counter(section) '. ';
-		counter-increment: section;
-		color: var(--ink-3);
-		margin-right: 0.5ch;
 	}
 	.prose :global(h3) {
 		font-size: var(--text-lg);
-		counter-reset: subsub;
-	}
-	.prose :global(h3::before) {
-		content: counter(section) '.' counter(sub) '. ';
-		counter-increment: sub;
-		color: var(--ink-3);
-		margin-right: 0.5ch;
 	}
 	.prose :global(h4) {
 		font-size: var(--text-md);
 		color: var(--ink-2);
 	}
-	.prose :global(h4::before) {
-		content: counter(section) '.' counter(sub) '.' counter(subsub) '. ';
-		counter-increment: subsub;
+	/* Section numbering. Counters key on the normalized heading depth
+	   (data-h-norm) emitted by markdown.ts, so `# Heading` and `## Heading`
+	   both number as "1." when used as the doc's top-level. Authors can pick
+	   either convention and get the same outline. */
+	.prose :global([data-h-norm='1']) {
+		counter-reset: l2 l3;
+	}
+	.prose :global([data-h-norm='1']::before) {
+		content: counter(l1) '. ';
+		counter-increment: l1;
 		color: var(--ink-3);
 		margin-right: 0.5ch;
+	}
+	.prose :global([data-h-norm='2']) {
+		counter-reset: l3;
+	}
+	.prose :global([data-h-norm='2']::before) {
+		content: counter(l1) '.' counter(l2) '. ';
+		counter-increment: l2;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
+	}
+	.prose :global([data-h-norm='3']::before) {
+		content: counter(l1) '.' counter(l2) '.' counter(l3) '. ';
+		counter-increment: l3;
+		color: var(--ink-3);
+		margin-right: 0.5ch;
+	}
+	/* Top-level body heading keeps the underline accent — but only when it's
+	   actually being used as a top-level section divider, not when it's a
+	   deeper heading that happens to be rendered with the h1 tag. */
+	.prose :global(h1[data-h-norm='1']) {
+		padding-bottom: var(--space-2);
+		border-bottom: var(--border-thin) solid var(--rule);
 	}
 	.prose :global(p),
 	.prose :global(ul),
@@ -2515,58 +2547,64 @@
 	}
 
 	/* --- Foldable sections ---
-	   Each markdown heading (h2/h3) wraps the blocks beneath it in a
-	   <section class="doc-section">. A subtle 1px rail in the left gutter
-	   marks the section's vertical span; the nested sub-section rail steps
-	   right by a hair so hierarchy reads at a glance without ever indenting
-	   body text — the column stays put. The whole rail is a hit target
-	   (Reddit-style); a small `[▾]`/`[▸]` disclosure glyph at the right of
-	   the heading is the keyboard-reachable toggle. The toggle deliberately
-	   lives outside the per-line gutter so it doesn't compete with the
-	   hover-revealed `¶`/`[+]`/`[~]` affordances or repeat the `[+]`
-	   shape of the add-comment button. Margin-collapse carries through
-	   the wrapper, so the heading rhythm matches the flat layout it
-	   replaced. */
+	   Each markdown heading wraps the blocks beneath it in a
+	   <section class="doc-section">. A very faint background tint on the body
+	   marks the section's vertical span — the tint sits behind the text and
+	   stays out of the gutter where the hover-revealed `¶`/`[+]`/`[~]`
+	   affordances live (previously a 1px rail in that gutter competed with
+	   them). A small `[▾]`/`[▸]` disclosure glyph at the right of the heading
+	   is the keyboard-reachable toggle. Only the outermost section gets the
+	   tint so nesting doesn't compound into ever-darker blocks; sub-sections
+	   are identified by their own heading rhythm. */
 	.doc-section {
 		position: relative;
-		/* Per-depth rail offset. h2 sits a touch further out; h3 nests
-		   slightly inward so a parent + child rail read as two strokes. */
-		--fold-x: -2.3rem;
-	}
-	.doc-section-h3 {
-		--fold-x: -1.9rem;
 	}
 
-	/* Toggle sits in the heading's right margin, away from the line-affordance
-	   gutter. Always visible at low contrast so the fold is discoverable; the
-	   `[▾]`/`[▸]` disclosure triangles read as fold state rather than as an
-	   add-comment `[+]`. */
-	.section-toggle {
+	/* Body headings carry the disclosure toggle as an injected child; make
+	   them a positioning context for the absolute-positioned toggle. */
+	.prose :global([data-h-norm]) {
+		position: relative;
+	}
+	/* Disclosure toggle. Injected as the last child of the heading element so
+	   `font: inherit` gives the button a line-box the same height as the
+	   heading's first line. The visual glyph lives in an inner `<span>` at
+	   `--text-xs`; because it's an inline child of a button whose line-height
+	   matches the heading, default baseline alignment lands the glyph on the
+	   heading's first-line baseline — no transform or hand-tuned `top`. The
+	   button is then nudged out into the right gutter so it never overlaps
+	   heading text, with a smaller offset on mobile (less gutter room). The
+	   button has no Svelte click handler; clicks are caught by the section's
+	   delegated handler via `data-section-toggle`. */
+	.prose :global(.section-toggle) {
 		position: absolute;
-		top: 0.4em;
-		right: 0;
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		letter-spacing: var(--track-tight);
-		line-height: 1;
-		color: var(--ink-4);
+		top: 0;
+		right: calc(-1 * var(--space-6));
+		font: inherit;
 		background: transparent;
 		border: 0;
-		padding: 2px 4px;
+		padding: 0;
 		margin: 0;
 		cursor: pointer;
+		color: var(--ink-4);
 		opacity: 0.55;
 		transition:
 			opacity var(--dur-fast) var(--ease-out-quart),
 			color var(--dur-fast) var(--ease-out-quart);
 	}
-	.section-toggle:hover,
-	.section-toggle:focus-visible {
+	.prose :global(.section-toggle-glyph) {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		line-height: 1;
+		font-weight: normal;
+	}
+	.prose :global(.section-toggle:hover),
+	.prose :global(.section-toggle:focus-visible) {
 		opacity: 1;
 		color: var(--accent);
 		outline: none;
 	}
-	.doc-section.is-collapsed > .section-toggle {
+	.doc-section.is-collapsed :global(.section-toggle) {
 		/* Collapsed sections get a touch more presence so the re-expand
 		   affordance is easy to find when scanning a folded outline. */
 		opacity: 0.8;
@@ -2575,53 +2613,25 @@
 	.section-body {
 		position: relative;
 	}
-	/* The rail: a narrow click strip with a 1px visible line down its centre.
-	   The strip is wider than the line so the hit target is comfortable; the
-	   line thickens and brightens on hover to confirm the trigger. Lives only
-	   under the heading, so the rail never crosses the per-line affordance row
-	   on the heading itself. */
-	.section-fold-rail {
-		position: absolute;
-		top: 0;
-		bottom: 0;
-		left: var(--fold-x);
-		width: var(--space-2);
+	/* Top-level section tint. A negative inline margin (matched by inline
+	   padding) extends the tint a hair past the prose column so the boundary
+	   reads as a held container, not a thin strip. No vertical padding so
+	   the heading-to-body and block-to-block margins still collapse the way
+	   they would in flat layout — the tint then visually wraps the content
+	   tightly instead of opening empty space above the first child. */
+	.doc-section-h1 > .section-body {
+		background: color-mix(in oklch, var(--surface-sunken) 55%, transparent);
+		margin-inline: calc(-1 * var(--space-3));
+		padding-inline: var(--space-3);
+		border-radius: 4px;
+	}
+	/* Sub-sections share the parent's tint; suppress their own background so
+	   nested fold structure doesn't compound into a heavier block. */
+	.doc-section .doc-section > .section-body {
 		background: transparent;
-		border: 0;
-		padding: 0;
-		margin: 0;
-		cursor: pointer;
-		/* Stays beneath gutter affordances so [+]/[~]/¶ remain clickable
-		   when the cursor crosses the rail. */
-		z-index: 0;
-	}
-	.section-fold-rail::before {
-		content: '';
-		position: absolute;
-		top: 0;
-		bottom: 0;
-		left: calc(50% - 0.5px);
-		width: 1px;
-		background: var(--rule);
-		transition:
-			width var(--dur-fast) var(--ease-out-quart),
-			left var(--dur-fast) var(--ease-out-quart),
-			background var(--dur-fast) var(--ease-out-quart);
-	}
-	.section-fold-rail:hover::before {
-		width: 2px;
-		left: calc(50% - 1px);
-		background: var(--rule-strong);
-	}
-
-	/* Mobile: rails fall off-screen and add little value at narrow widths
-	   where vertical scroll is the primary scan. The right-aligned toggle
-	   already works on mobile (it's positioned against the section, not
-	   the gutter), so the only change is to suppress the rail. */
-	@media (max-width: 720px) {
-		.section-fold-rail {
-			display: none;
-		}
+		margin-inline: 0;
+		padding-inline: 0;
+		border-radius: 0;
 	}
 
 	/* --- Line-anchored comment affordance ---
@@ -2649,8 +2659,8 @@
 	}
 	.prose :global(.md-comment-btn) {
 		position: absolute;
-		left: -3.5rem;
-		top: 0.1em;
+		left: -4.5rem;
+		top: var(--gutter-button-top, 0.1em);
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
 		letter-spacing: var(--track-tight);
@@ -2679,8 +2689,8 @@
 	   editor frame). */
 	.prose :global(.md-edit-btn) {
 		position: absolute;
-		left: -1.5rem;
-		top: 0.1em;
+		left: -2.5rem;
+		top: var(--gutter-button-top, 0.1em);
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
 		letter-spacing: var(--track-tight);
@@ -2712,8 +2722,8 @@
 	   sharing is always public. */
 	.prose :global(.md-link-btn) {
 		position: absolute;
-		left: -5rem;
-		top: 0.1em;
+		left: -6rem;
+		top: var(--gutter-button-top, 0.1em);
 		width: 1ch;
 		text-align: center;
 		font-family: var(--font-mono);
@@ -2746,8 +2756,8 @@
 	   the count when both are present, so they never collide. */
 	.prose :global(.md-comment-count) {
 		position: absolute;
-		left: -3.5rem;
-		top: 0.1em;
+		left: -4.5rem;
+		top: var(--gutter-button-top, 0.1em);
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
 		letter-spacing: var(--track-tight);
@@ -2762,10 +2772,40 @@
 	   [+]/[~] gutter slot. Drop both action buttons one row so the trio reads
 	   as `¶ [N]` over `[+] [~]` instead of letting [~] sit alongside the count
 	   while [+] hangs alone below. */
-	@media (min-width: 1200px) {
+	@media (min-width: 1400px) {
 		.doc-shell .prose :global(.md-block.has-comments > .md-comment-btn),
 		.doc-shell .prose :global(.md-block.has-comments > .md-edit-btn) {
-			top: 1.4em;
+			top: calc(var(--gutter-button-top, 0.1em) + 1.3em);
+		}
+	}
+
+	/* Heading blocks have a much taller first-line box than body text, so the
+	   default 0.1em puts the small button visibly above the heading's first
+	   line. Override --gutter-button-top per heading depth to vertically center
+	   the button line-box against the heading line-box. Scoped to non-mobile —
+	   on narrow viewports the gutter buttons are laid out in a dedicated row
+	   above the block (see the mobile media query), so no correction is needed
+	   there. */
+	@media (min-width: 721px) {
+		.prose :global(.md-block:has(> h1)) {
+			--gutter-button-top: calc(
+				(var(--text-2xl) * var(--leading-snug) - var(--text-xs) * var(--leading-body)) / 2
+			);
+		}
+		.prose :global(.md-block:has(> h2)) {
+			--gutter-button-top: calc(
+				(var(--text-xl) * var(--leading-snug) - var(--text-xs) * var(--leading-body)) / 2
+			);
+		}
+		.prose :global(.md-block:has(> h3)) {
+			--gutter-button-top: calc(
+				(var(--text-lg) * var(--leading-snug) - var(--text-xs) * var(--leading-body)) / 2
+			);
+		}
+		.prose :global(.md-block:has(> h4)) {
+			--gutter-button-top: calc(
+				(var(--text-md) * var(--leading-snug) - var(--text-xs) * var(--leading-body)) / 2
+			);
 		}
 	}
 
@@ -2818,7 +2858,7 @@
 
 	.prose :global(.md-sub-btn) {
 		position: absolute;
-		left: -3.5rem;
+		left: -4.5rem;
 		top: 0.1em;
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
@@ -2849,7 +2889,7 @@
 	   gutter slot. Same visibility rules; addition-tinted hover. */
 	.prose :global(.md-sub-edit-btn) {
 		position: absolute;
-		left: -1.5rem;
+		left: -2.5rem;
 		top: 0.1em;
 		font-family: var(--font-mono);
 		font-size: var(--text-xs);
@@ -2881,7 +2921,7 @@
 	   signed-out viewers too. */
 	.prose :global(.md-sub-link) {
 		position: absolute;
-		left: -5rem;
+		left: -6rem;
 		top: 0.1em;
 		width: 1ch;
 		text-align: center;
@@ -2915,7 +2955,7 @@
 	   padding so the button lands in the gutter outside the table. */
 	.prose :global(tr.md-sub > td:first-child > .md-sub-btn),
 	.prose :global(tr.md-sub > th:first-child > .md-sub-btn) {
-		left: calc(-1 * var(--space-3) - 3.5rem);
+		left: calc(-1 * var(--space-3) - 4.5rem);
 		top: 50%;
 		transform: translateY(-50%);
 	}
@@ -2923,33 +2963,35 @@
 	   third gutter slot. */
 	.prose :global(tr.md-sub > td:first-child > .md-sub-edit-btn),
 	.prose :global(tr.md-sub > th:first-child > .md-sub-edit-btn) {
-		left: calc(-1 * var(--space-3) - 1.5rem);
+		left: calc(-1 * var(--space-3) - 2.5rem);
 		top: 50%;
 		transform: translateY(-50%);
 	}
 	/* Same trick for the ¶ glyph — seats just outside the row [+]. */
 	.prose :global(tr.md-sub > td:first-child > .md-sub-link),
 	.prose :global(tr.md-sub > th:first-child > .md-sub-link) {
-		left: calc(-1 * var(--space-3) - 5rem);
+		left: calc(-1 * var(--space-3) - 6rem);
 		top: 50%;
 		transform: translateY(-50%);
 	}
 
 	/* List-item sub-anchor buttons: `li.md-sub` is `position: relative`, so the
 	   shared `.md-sub-link/.md-sub-btn/.md-sub-edit-btn` positions resolve
-	   against the LI's content box, not `.md-block`. That's one UL padding-left
-	   (~2.5ch) further right than the block-level buttons, which pushes [~]
-	   into the area where the list marker (bullet / number) sits. Shift each
-	   sub-anchor button on a list item one extra `1.5rem` left so it lands in
-	   the md-block gutter alongside the block-level trio, clearing the marker. */
+	   against the LI's padding box, not `.md-block`. Block-level buttons
+	   anchor to `.md-block`'s padding box, but `<li>` lives inside two further
+	   inward offsets: `.md-block`'s `padding-inline: var(--space-2)` plus a
+	   `padding-left: 2.5ch` from each `<ul>`/`<ol>` ancestor. Subtract both so
+	   every list-item button — outermost or deeply nested — lands in the same
+	   gutter column as the block-level trio. `--md-list-depth` is emitted on
+	   each `<li>` by `annotateListInto` in markdown.ts (1 = outermost). */
 	.prose :global(li.md-sub > .md-sub-link) {
-		left: -6.5rem;
+		left: calc(-6rem - var(--space-2) - var(--md-list-depth, 1) * 2.5ch);
 	}
 	.prose :global(li.md-sub > .md-sub-btn) {
-		left: -5rem;
+		left: calc(-4.5rem - var(--space-2) - var(--md-list-depth, 1) * 2.5ch);
 	}
 	.prose :global(li.md-sub > .md-sub-edit-btn) {
-		left: -3rem;
+		left: calc(-2.5rem - var(--space-2) - var(--md-list-depth, 1) * 2.5ch);
 	}
 
 	/* Code-block lines are <span class="md-sub md-code-line"> rendered inside
@@ -2994,7 +3036,7 @@
 	   available on the server). On desktop the CSS-driven grid above hides
 	   it pre-hydration, so when `isRail` flips true in onMount and Svelte
 	   removes it from the DOM, nothing shifts. */
-	@media (min-width: 1200px) {
+	@media (min-width: 1400px) {
 		.doc-comments {
 			display: none;
 		}
@@ -3223,7 +3265,12 @@
 	.comment-body :global(p:last-child) {
 		margin-bottom: 0;
 	}
-	@media (max-width: 720px) {
+	/* Below ~840px the gutter-anchored buttons (¶/[+]/[~] reaching -6rem from
+	   `.doc-shell`) start to overflow the viewport — they need ~96px to the
+	   left of the doc-shell, and `.shell-main`'s 24px padding only adds enough
+	   room once the viewport hits ~840px. Switch to the stacked above-block
+	   layout below 880px, leaving a small buffer at the breakpoint. */
+	@media (max-width: 880px) {
 		.meta-row {
 			grid-template-columns: 1fr;
 			gap: var(--space-3);
@@ -3281,10 +3328,22 @@
 		.prose :global(.md-edit-btn) {
 			left: 4.5em;
 		}
+		.prose :global(h1),
 		.prose :global(h2),
 		.prose :global(h3),
 		.prose :global(h4) {
 			margin-top: var(--space-4);
+		}
+		/* No right gutter on narrow viewports — keep the disclosure toggle
+		   inside the column and reserve room with right padding on foldable
+		   headings so the glyph doesn't overlap text. */
+		.prose :global(.section-toggle) {
+			right: 0;
+		}
+		.prose :global([data-h-norm='1']),
+		.prose :global([data-h-norm='2']),
+		.prose :global([data-h-norm='3']) {
+			padding-right: var(--space-5);
 		}
 		.prose :global(.md-sub-btn),
 		.prose :global(.md-sub-link),

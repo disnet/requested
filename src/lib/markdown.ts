@@ -65,13 +65,30 @@ export function slugify(text: string): string {
 		.slice(0, 80);
 }
 
-function createRenderer() {
+// Normalized heading depth: 1 for the shallowest heading the author actually
+// used, 2 for the next, etc. A doc that opens with `#` and a doc that opens
+// with `##` should both number as 1 / 1.1 / 1.1.1, so numbering and section
+// styling key off this rather than the raw tag.
+function findTopHeadingDepth(tokens: Token[]): number | null {
+	let min: number | null = null;
+	for (const t of tokens) {
+		if (t.type === 'heading') {
+			const d = (t as Tokens.Heading).depth;
+			if (min == null || d < min) min = d;
+		}
+	}
+	return min;
+}
+
+function createRenderer(topDepth: number | null) {
 	const renderer = new marked.Renderer();
 	const baseHeading = renderer.heading.bind(renderer);
 	renderer.heading = function (token: Tokens.Heading) {
 		const html = baseHeading(token);
 		const id = slugify(token.text);
-		return html.replace(/^<h([1-6])>/, `<h$1 id="${id}">`);
+		const norm = topDepth != null ? token.depth - topDepth + 1 : null;
+		const normAttr = norm != null ? ` data-h-norm="${norm}"` : '';
+		return html.replace(/^<h([1-6])>/, `<h$1 id="${id}"${normAttr}>`);
 	};
 	return renderer;
 }
@@ -80,7 +97,9 @@ function createRenderer() {
 // records, so sanitizing is mandatory — DOMPurify strips scripts, event
 // handlers, and dangerous URIs from the marked output.
 export function renderMarkdown(src: string): string {
-	const rawHtml = marked.parse(src, { async: false, renderer: createRenderer() }) as string;
+	const tokens = marked.lexer(src);
+	const topDepth = findTopHeadingDepth(tokens);
+	const rawHtml = marked.parser(tokens, { renderer: createRenderer(topDepth) });
 	return sanitize(rawHtml);
 }
 
@@ -100,8 +119,9 @@ export function renderMarkdown(src: string): string {
 // any per-anchor markup we inject. The bodies arrive from arbitrary PDSes,
 // so the sanitize step is non-negotiable.
 export function renderMarkdownBlocks(src: string): RenderedBlock[] {
-	const renderer = createRenderer();
 	const tokens = marked.lexer(src);
+	const topDepth = findTopHeadingDepth(tokens);
+	const renderer = createRenderer(topDepth);
 	const links = (tokens as unknown as { links?: Record<string, unknown> }).links;
 
 	const blocks: RenderedBlock[] = [];
@@ -209,7 +229,9 @@ function editButtonHtml(line: number, extraClass = ''): string {
 
 // Add `data-md-line` and `class="md-sub"` to an existing `<tag ...>` open
 // string. If a class attribute already exists, append; otherwise add one.
-function addSubAttrs(openTag: string, line: number): string {
+// `extraStyle` is an optional `style` attribute body — assumes the tag has no
+// pre-existing style attribute (true for marked's <li>/<tr> output).
+function addSubAttrs(openTag: string, line: number, extraStyle?: string): string {
 	let out = openTag;
 	if (/\sclass\s*=\s*"[^"]*"/.test(out)) {
 		out = out.replace(/\sclass\s*=\s*"([^"]*)"/, (_, c) => ` class="${c} md-sub"`);
@@ -217,6 +239,9 @@ function addSubAttrs(openTag: string, line: number): string {
 		out = out.replace(/^<([a-zA-Z][\w-]*)/, (_, t) => `<${t} class="md-sub"`);
 	}
 	out = out.replace(/^<([a-zA-Z][\w-]*)/, (_, t) => `<${t} data-md-line="${line}"`);
+	if (extraStyle) {
+		out = out.replace(/^<([a-zA-Z][\w-]*)/, (_, t) => `<${t} style="${extraStyle}"`);
+	}
 	return out;
 }
 
@@ -295,19 +320,24 @@ function annotateList(
 	startLine: number
 ): { html: string; subLines: number[] } {
 	const subLines: number[] = [];
-	const result = annotateListInto(token, html, startLine, subLines);
+	const result = annotateListInto(token, html, startLine, subLines, 1);
 	return { html: result ?? html, subLines };
 }
 
 // Recursive worker that annotates a list's <li> children and walks into each
 // item's nested <ul>/<ol> so deeper items become their own sub-anchors too.
 // Pushes every annotated line into `subLinesOut` (flat, depth-independent).
+// `depth` is 1 for the outermost list and increments for each nesting level —
+// emitted as a `--md-list-depth` CSS custom property on each `<li>` so the
+// gutter buttons can subtract the cumulative `<ul>` padding (~2.5ch per level)
+// and land in the same column as the block-level gutter regardless of nesting.
 // Returns null when the HTML shape is unexpected so the caller can bail.
 function annotateListInto(
 	token: Tokens.List,
 	html: string,
 	startLine: number,
-	subLinesOut: number[]
+	subLinesOut: number[],
+	depth: number
 ): string | null {
 	const openMatch = html.match(/^\s*<(ul|ol)\b[^>]*>/i);
 	if (!openMatch) return null;
@@ -335,10 +365,12 @@ function annotateListInto(
 		// children of the parent <li> in marked's output.
 		const nestedInfo = collectNestedLists(item, itemLine);
 		const processedInner =
-			nestedInfo.length > 0 ? annotateNestedLists(inner, nestedInfo, subLinesOut) : inner;
+			nestedInfo.length > 0
+				? annotateNestedLists(inner, nestedInfo, subLinesOut, depth + 1)
+				: inner;
 
 		return {
-			open: addSubAttrs(openTag, itemLine),
+			open: addSubAttrs(openTag, itemLine, `--md-list-depth: ${depth}`),
 			inner:
 				linkButtonHtml(itemLine) +
 				commentButtonHtml(itemLine) +
@@ -371,7 +403,8 @@ function collectNestedLists(item: Tokens.ListItem, itemLine: number): NestedList
 function annotateNestedLists(
 	innerHtml: string,
 	nestedInfo: NestedListInfo[],
-	subLinesOut: number[]
+	subLinesOut: number[],
+	depth: number
 ): string {
 	const out: string[] = [];
 	let pos = 0;
@@ -382,7 +415,7 @@ function annotateNestedLists(
 		out.push(innerHtml.slice(pos, next.start));
 		const fullList = innerHtml.slice(next.start, next.end);
 		const { token, line } = nestedInfo[idx];
-		const annotated = annotateListInto(token, fullList, line, subLinesOut);
+		const annotated = annotateListInto(token, fullList, line, subLinesOut, depth);
 		out.push(annotated ?? fullList);
 		pos = next.end;
 		idx += 1;

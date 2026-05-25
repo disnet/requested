@@ -57,7 +57,7 @@ const ALLOWED_TAGS = [
 ];
 
 const ALLOWED_ATTRS: Record<string, string[]> = {
-	'*': ['id', 'class', 'data-md-line', 'data-md-add', 'data-md-link', 'style'],
+	'*': ['id', 'class', 'data-md-line', 'data-md-add', 'data-md-link', 'data-h-norm', 'style'],
 	a: ['href', 'title', 'name', 'tabindex', 'aria-label'],
 	button: ['type', 'tabindex', 'aria-label', 'title'],
 	img: ['src', 'alt', 'title'],
@@ -75,11 +75,15 @@ export function sanitizeOnServer(html: string): string {
 		allowedSchemesByTag: { a: ['http', 'https', 'mailto'] },
 		allowProtocolRelative: false,
 		// `style` is allowed at all (we inject `--md-li: <n>` on per-line code
-		// spans), but cap what can appear inside.
+		// spans and `--md-list-depth: <n>` on list items), but cap what can
+		// appear inside.
 		allowedStyles: {
 			'*': {
 				// CSS custom property used by the per-line code gutter button.
-				'--md-li': [/^\d+$/]
+				'--md-li': [/^\d+$/],
+				// CSS custom property carrying a list item's nesting depth so
+				// gutter buttons can compensate for cumulative <ul> padding.
+				'--md-list-depth': [/^\d+$/]
 			}
 		}
 	});
