@@ -28,7 +28,7 @@
 	} from '$lib/atproto/comments';
 	import type { CommentSuggestion, StrongRef } from '$lib/atproto/lexicons';
 	import { fetchProfile, type Profile } from '$lib/atproto/profile';
-	import { renderMarkdown, renderMarkdownBlocks } from '$lib/markdown';
+	import { renderMarkdown, renderMarkdownBlocks, type RenderedBlock } from '$lib/markdown';
 	import { downloadMarkdown } from '$lib/export';
 	import { recordView } from '$lib/viewed-docs';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
@@ -153,6 +153,7 @@
 			applyBusy.clear();
 			applyError.clear();
 			expandedLines.clear();
+			collapsedSections.clear();
 			activeLine = null;
 			linkedLine = null;
 			didInitialHashScroll = false;
@@ -255,6 +256,129 @@
 		}
 		return map;
 	});
+
+	// Foldable sections. Each markdown heading (h1–h3) opens a section that
+	// contains every following block until the next heading of equal or
+	// shallower depth. The tree is recursive so a Reddit-style fold cascades
+	// through nested sub-sections. h4+ stay as plain blocks — they're rare
+	// enough that a fold ceiling avoids gutter conflicts with the per-line
+	// `[+]`/`[~]` affordances.
+	const FOLD_MAX_DEPTH = 3;
+	type DocSection = {
+		kind: 'section';
+		id: string;
+		depth: number;
+		heading: RenderedBlock;
+		children: DocNode[];
+		bodyLines: Set<number>;
+	};
+	type DocBlock = { kind: 'block'; block: RenderedBlock };
+	type DocNode = DocSection | DocBlock;
+
+	const docTree = $derived.by<DocNode[]>(() => {
+		const root: DocNode[] = [];
+		const stack: Array<{ section: DocSection | null; children: DocNode[]; depth: number }> = [
+			{ section: null, children: root, depth: 0 }
+		];
+		for (const block of renderedBlocks) {
+			const d = block.headingDepth;
+			if (d != null && d <= FOLD_MAX_DEPTH) {
+				while (stack.length > 1 && stack[stack.length - 1].depth >= d) {
+					stack.pop();
+				}
+				const section: DocSection = {
+					kind: 'section',
+					id: `sec-${block.line}`,
+					depth: d,
+					heading: block,
+					children: [],
+					bodyLines: new Set()
+				};
+				stack[stack.length - 1].children.push(section);
+				stack.push({ section, children: section.children, depth: d });
+			} else {
+				stack[stack.length - 1].children.push({ kind: 'block', block });
+				for (let i = 1; i < stack.length; i++) {
+					const s = stack[i].section!;
+					s.bodyLines.add(block.line);
+					for (const sl of block.subLines) s.bodyLines.add(sl);
+				}
+			}
+		}
+		return root;
+	});
+
+	// IDs of currently-collapsed sections. Empty by default; user toggles via
+	// the heading's [−]/[+] glyph or by clicking the section's left rail.
+	const collapsedSections = new SvelteSet<string>();
+
+	function toggleSection(id: string) {
+		if (collapsedSections.has(id)) collapsedSections.delete(id);
+		else collapsedSections.add(id);
+	}
+
+	// Whole-heading click as a fold shortcut. Skips when:
+	// - the click landed on something interactive (the gutter affordances ¶/[+]/[~],
+	//   the dedicated toggle, or any link inside the heading text);
+	// - the click is inside the section body (only the heading row folds);
+	// - the user is finishing a text selection on the heading. Without the
+	//   selection guard, drag-to-select followed by mouseup would collapse the
+	//   section the user just tried to copy from.
+	function onSectionHeadClick(e: MouseEvent, sectionId: string) {
+		const target = e.target as HTMLElement | null;
+		if (!target) return;
+		if (target.closest('button, a, input, select, textarea, summary, label')) return;
+		if (target.closest('.section-body')) return;
+		const sel = window.getSelection();
+		if (sel && !sel.isCollapsed) return;
+		toggleSection(sectionId);
+	}
+
+	// Map of every line (block or sub-anchor) to the chain of section IDs that
+	// contain it, outermost-first. Used to (a) hide rail cards / inline threads
+	// whose anchor is inside a collapsed section, and (b) expand the right
+	// ancestors when a permalink targets a hidden line.
+	const lineToSectionPath = $derived.by(() => {
+		const map = new SvelteMap<number, string[]>();
+		const visit = (nodes: DocNode[], path: string[]) => {
+			for (const n of nodes) {
+				if (n.kind === 'block') {
+					map.set(n.block.line, path);
+					for (const sl of n.block.subLines) map.set(sl, path);
+				} else {
+					const next = [...path, n.id];
+					map.set(n.heading.line, path); // heading itself sits in parent's scope
+					for (const sl of n.heading.subLines) map.set(sl, path);
+					visit(n.children, next);
+				}
+			}
+		};
+		visit(docTree, []);
+		return map;
+	});
+
+	// Set of all line numbers currently hidden because an ancestor section is
+	// collapsed. Comments / threads anchored to these lines drop out of the rail
+	// and inline thread lists until their section is re-expanded.
+	const hiddenLines = $derived.by<SvelteSet<number>>(() => {
+		const out = new SvelteSet<number>();
+		if (collapsedSections.size === 0) return out;
+		for (const [line, path] of lineToSectionPath) {
+			for (const sid of path) {
+				if (collapsedSections.has(sid)) {
+					out.add(line);
+					break;
+				}
+			}
+		}
+		return out;
+	});
+
+	function expandSectionsContaining(line: number) {
+		const path = lineToSectionPath.get(line);
+		if (!path) return;
+		for (const sid of path) collapsedSections.delete(sid);
+	}
 
 	// Display fields for the metadata block
 	const authorHandle = $derived(author?.handle ?? loaded?.did ?? '');
@@ -370,12 +494,21 @@
 
 		const lineKeys = new SvelteSet<number>();
 		for (const [line, group] of groupedThreads.lineGroups) {
+			// Lines inside a collapsed section have no DOM anchor — skipping
+			// keeps cards from stacking against an absent target. The cards
+			// reappear automatically when the section is re-expanded.
+			if (hiddenLines.has(line)) continue;
 			lineKeys.add(line);
 			items.push({ kind: 'line', key: `L${line}`, line, threads: group });
 		}
 		// Composer on a fresh line — synthesize an empty group so the rail
 		// has somewhere to host the composer.
-		if (composer && composer.line != null && !lineKeys.has(composer.line)) {
+		if (
+			composer &&
+			composer.line != null &&
+			!lineKeys.has(composer.line) &&
+			!hiddenLines.has(composer.line)
+		) {
 			items.push({
 				kind: 'line',
 				key: `L${composer.line}`,
@@ -408,6 +541,7 @@
 		void commentStates;
 		void resolutionByRoot;
 		void expandedResolved;
+		void collapsedSections.size;
 		void resolveError;
 
 		let raf = 0;
@@ -492,8 +626,11 @@
 	});
 
 	// Sub-anchor [~] buttons mirror the [+] delegation above. Each button carries
-	// `data-md-edit="<line>"`; sub-anchors are always single source line, so the
-	// edit range is just that line.
+	// `data-md-edit="<line>"`. List items and code lines edit the whole containing
+	// block — a single bullet or code line rarely makes sense as an atomic edit
+	// (the surrounding syntax is the unit a reader reasons about). Table rows
+	// stay row-scoped: GFM rows are independent source lines and editing the
+	// whole table en bloc would be more disruptive than helpful.
 	$effect(() => {
 		const article = articleEl;
 		if (!article) return;
@@ -506,7 +643,13 @@
 			const lineNum = Number(lineStr);
 			if (!Number.isFinite(lineNum)) return;
 			e.preventDefault();
-			tryOpenSuggestEdit(lineNum, lineNum);
+			const blockLine = subToBlock.get(lineNum) ?? lineNum;
+			const block = renderedBlocks.find((b) => b.line === blockLine);
+			if (block && (block.kind === 'list' || block.kind === 'code')) {
+				tryOpenSuggestEdit(block.line, block.endLine);
+			} else {
+				tryOpenSuggestEdit(lineNum, lineNum);
+			}
 		};
 		article.addEventListener('click', onClick);
 		return () => article.removeEventListener('click', onClick);
@@ -655,6 +798,9 @@
 		if (!match) return;
 		const line = Number(match[1]);
 		linkedLine = line;
+		// Expand any sections currently hiding the target so scrollToLine has
+		// something to anchor on. No-op if the line is already visible.
+		expandSectionsContaining(line);
 		// One more frame so the imperative is-linked effect above has applied
 		// classes before we measure for the scroll.
 		requestAnimationFrame(() => scrollToLine(line, false));
@@ -915,6 +1061,7 @@
 		// pollute the back stack with one entry per line.
 		history.replaceState(null, '', `#L${line}`);
 		linkedLine = line;
+		expandSectionsContaining(line);
 		scrollToLine(line, true);
 		try {
 			await navigator.clipboard?.writeText(url);
@@ -1145,154 +1292,8 @@
 			</header>
 
 			<div class="prose">
-				{#each renderedBlocks as block, i (i)}
-					{@const blockAllLines = [block.line, ...block.subLines]}
-					{@const blockLineGroups = groupedThreads.lineGroups.filter(([l]) =>
-						blockAllLines.includes(l)
-					)}
-					{@const blockCommentCount = blockLineGroups.reduce(
-						(acc, [, threads]) => acc + threads.reduce((a, t) => a + 1 + t.replies.length, 0),
-						0
-					)}
-					{@const hasSubAnchors = block.subLines.length > 0}
-					{@const isActive = activeLine === block.line}
-					{@const composerInBlock =
-						composer != null &&
-						composer.line != null &&
-						blockAllLines.includes(composer.line) &&
-						composer.parent == null}
-					{@const blockBeingEdited =
-						!hasSubAnchors &&
-						suggestEdit != null &&
-						suggestEdit.startLine === block.line &&
-						suggestEdit.endLine === block.endLine}
-					<div
-						class="md-block"
-						class:has-comments={blockCommentCount > 0}
-						class:has-sub-anchors={hasSubAnchors}
-						class:is-active={isActive && !hasSubAnchors && !blockBeingEdited}
-						class:is-linked={linkedLine === block.line && !hasSubAnchors && !blockBeingEdited}
-						class:is-editing={blockBeingEdited}
-						data-md-line={hasSubAnchors ? null : block.line}
-					>
-						{#if blockCommentCount > 0 && isRail && !hasSubAnchors && !blockBeingEdited}
-							<span class="md-comment-count" aria-hidden="true">
-								[{blockCommentCount}]
-							</span>
-						{/if}
-						{#if !hasSubAnchors && !blockBeingEdited}
-							<a
-								class="md-link-btn"
-								href={`#L${block.line}`}
-								data-md-link={block.line}
-								tabindex="-1"
-								aria-label={`Link to line ${block.line}`}
-								title={`Copy link to line ${block.line}`}
-							>
-								¶
-							</a>
-							<button
-								type="button"
-								class="md-comment-btn"
-								aria-label={auth.status === 'signed-in'
-									? `Add comment on line ${block.line}`
-									: `Sign in to comment on line ${block.line}`}
-								title={auth.status === 'signed-in'
-									? `Comment on line ${block.line}`
-									: 'Sign in to comment'}
-								onclick={() => tryOpenComposer(block.line)}
-							>
-								[+]
-							</button>
-							<button
-								type="button"
-								class="md-edit-btn"
-								aria-label={auth.status === 'signed-in'
-									? `Suggest an edit starting at line ${block.line}`
-									: `Sign in to suggest an edit at line ${block.line}`}
-								title={auth.status === 'signed-in'
-									? `Suggest an edit`
-									: 'Sign in to suggest an edit'}
-								onclick={() => tryOpenSuggestEdit(block.line, block.endLine)}
-							>
-								[~]
-							</button>
-						{/if}
-						{#if blockBeingEdited}
-							{@render inlineSuggestEditor()}
-						{:else}
-							<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
-							{@html block.html}
-						{/if}
-						{#if blockCommentCount > 0 && !isRail}
-							<button
-								type="button"
-								class="line-chip"
-								aria-expanded={expandedLines.has(block.line)}
-								onclick={() => toggleLine(block.line)}
-							>
-								<span class="line-chip-count">{blockCommentCount}</span>
-								<span class="line-chip-label">
-									{blockCommentCount === 1 ? 'comment' : 'comments'}
-								</span>
-							</button>
-						{/if}
-						{#if hasSubAnchors && suggestEdit && blockAllLines.includes(suggestEdit.startLine) && suggestEdit.startLine === suggestEdit.endLine}
-							<!-- Sub-anchor suggest-edit (inside list / table / code). The portal
-							     effect re-parents this div into the matching <li> on mobile-list
-							     blocks; for tables, code, and desktop it stays at its rendered
-							     position underneath the block. -->
-							<div class="suggest-edit-portal" data-portal-line={suggestEdit.startLine}>
-								{@render inlineSuggestEditor()}
-							</div>
-						{/if}
-						{#if !isRail && block.kind === 'list'}
-							<!-- List blocks render one inline-thread per affected sub-line so that
-							     the portal effect (see articleEl effect block) can move each one
-							     inside its matching `<li class="md-sub" data-md-line="N">`. Until
-							     the effect runs (or for sub-lines whose `<li>` isn't found), the
-							     thread stays here at the end of the block — same as it was before
-							     the portal was added. -->
-							{#each block.subLines as subLine (subLine)}
-								{@const subThreads = blockLineGroups.find(([l]) => l === subLine)?.[1] ?? []}
-								{@const showComposer =
-									composer != null && composer.line === subLine && composer.parent == null}
-								{@const showThreads = expandedLines.has(block.line) && subThreads.length > 0}
-								{#if showThreads || showComposer}
-									<div class="inline-thread" data-portal-line={subLine}>
-										{#if showThreads}
-											{@render lineHeader(subLine, subThreads[0].root)}
-											{#each subThreads as thread (thread.root.uri)}
-												{@render threadInline(thread)}
-											{/each}
-										{/if}
-										{#if showComposer}
-											{@render inlineComposer()}
-										{/if}
-									</div>
-								{/if}
-							{/each}
-						{:else if !isRail && expandedLines.has(block.line) && blockLineGroups.length > 0}
-							<div class="inline-thread">
-								{#each blockLineGroups as [groupLine, threads] (groupLine)}
-									{@render lineHeader(groupLine, threads[0].root)}
-									{#each threads as thread (thread.root.uri)}
-										{@render threadInline(thread)}
-									{/each}
-									{#if composer && composer.line === groupLine && composer.parent == null}
-										{@render inlineComposer()}
-									{/if}
-								{/each}
-								{#if composerInBlock && !blockLineGroups.some(([l]) => l === composer?.line)}
-									{@render inlineComposer()}
-								{/if}
-							</div>
-						{:else if !isRail && composerInBlock}
-							<div class="inline-thread">
-								{@render inlineComposer()}
-							</div>
-						{/if}
-					</div>
+				{#each docTree as node (node.kind === 'section' ? node.id : `b${node.block.line}`)}
+					{@render renderNode(node)}
 				{/each}
 			</div>
 		</article>
@@ -1385,6 +1386,203 @@
 {#if flashMsg}
 	<div class="link-flash" role="status" aria-live="polite">{flashMsg}</div>
 {/if}
+
+{#snippet renderNode(node: DocNode)}
+	{#if node.kind === 'block'}
+		{@render renderBlock(node.block)}
+	{:else}
+		{@render renderSection(node)}
+	{/if}
+{/snippet}
+
+{#snippet renderSection(section: DocSection)}
+	{@const collapsed = collapsedSections.has(section.id)}
+	<!-- The whole-heading click is a mouse / touch shortcut for fold;
+	     keyboard accessibility is provided by `.section-toggle` below, so the
+	     section element itself stays semantically inert (no role, no key
+	     handler). svelte-ignore covers the resulting a11y warnings. -->
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<section
+		class="doc-section doc-section-h{section.depth}"
+		class:is-collapsed={collapsed}
+		data-section-id={section.id}
+		onclick={(e) => onSectionHeadClick(e, section.id)}
+	>
+		{@render renderBlock(section.heading)}
+		<button
+			type="button"
+			class="section-toggle"
+			aria-expanded={!collapsed}
+			aria-controls={`${section.id}-body`}
+			aria-label={collapsed
+				? `Expand section starting at line ${section.heading.line}`
+				: `Collapse section starting at line ${section.heading.line}`}
+			title={collapsed ? 'Expand section' : 'Collapse section'}
+			onclick={() => toggleSection(section.id)}
+		>
+			{collapsed ? '[▸]' : '[▾]'}
+		</button>
+		{#if !collapsed}
+			<div class="section-body" id={`${section.id}-body`}>
+				<button
+					type="button"
+					class="section-fold-rail"
+					tabindex="-1"
+					aria-hidden="true"
+					title="Collapse section"
+					onclick={() => toggleSection(section.id)}
+				></button>
+				{#each section.children as child (child.kind === 'section' ? child.id : `b${child.block.line}`)}
+					{@render renderNode(child)}
+				{/each}
+			</div>
+		{/if}
+	</section>
+{/snippet}
+
+{#snippet renderBlock(block: RenderedBlock)}
+	{@const blockAllLines = [block.line, ...block.subLines]}
+	{@const blockLineGroups = groupedThreads.lineGroups.filter(([l]) => blockAllLines.includes(l))}
+	{@const blockCommentCount = blockLineGroups.reduce(
+		(acc, [, threads]) => acc + threads.reduce((a, t) => a + 1 + t.replies.length, 0),
+		0
+	)}
+	{@const hasSubAnchors = block.subLines.length > 0}
+	{@const isActive = activeLine === block.line}
+	{@const composerInBlock =
+		composer != null &&
+		composer.line != null &&
+		blockAllLines.includes(composer.line) &&
+		composer.parent == null}
+	{@const blockBeingEdited =
+		suggestEdit != null &&
+		suggestEdit.startLine === block.line &&
+		suggestEdit.endLine === block.endLine}
+	<div
+		class="md-block"
+		class:has-comments={blockCommentCount > 0}
+		class:has-sub-anchors={hasSubAnchors}
+		class:is-active={isActive && !hasSubAnchors && !blockBeingEdited}
+		class:is-linked={linkedLine === block.line && !hasSubAnchors && !blockBeingEdited}
+		class:is-editing={blockBeingEdited}
+		data-md-line={hasSubAnchors ? null : block.line}
+	>
+		{#if blockCommentCount > 0 && isRail && !hasSubAnchors && !blockBeingEdited}
+			<span class="md-comment-count" aria-hidden="true">
+				[{blockCommentCount}]
+			</span>
+		{/if}
+		{#if !hasSubAnchors && !blockBeingEdited}
+			<a
+				class="md-link-btn"
+				href={`#L${block.line}`}
+				data-md-link={block.line}
+				tabindex="-1"
+				aria-label={`Link to line ${block.line}`}
+				title={`Copy link to line ${block.line}`}
+			>
+				¶
+			</a>
+			<button
+				type="button"
+				class="md-comment-btn"
+				aria-label={auth.status === 'signed-in'
+					? `Add comment on line ${block.line}`
+					: `Sign in to comment on line ${block.line}`}
+				title={auth.status === 'signed-in' ? `Comment on line ${block.line}` : 'Sign in to comment'}
+				onclick={() => tryOpenComposer(block.line)}
+			>
+				[+]
+			</button>
+			<button
+				type="button"
+				class="md-edit-btn"
+				aria-label={auth.status === 'signed-in'
+					? `Suggest an edit starting at line ${block.line}`
+					: `Sign in to suggest an edit at line ${block.line}`}
+				title={auth.status === 'signed-in' ? `Suggest an edit` : 'Sign in to suggest an edit'}
+				onclick={() => tryOpenSuggestEdit(block.line, block.endLine)}
+			>
+				[~]
+			</button>
+		{/if}
+		{#if blockBeingEdited}
+			{@render inlineSuggestEditor()}
+		{:else}
+			<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->
+			{@html block.html}
+		{/if}
+		{#if blockCommentCount > 0 && !isRail}
+			<button
+				type="button"
+				class="line-chip"
+				aria-expanded={expandedLines.has(block.line)}
+				onclick={() => toggleLine(block.line)}
+			>
+				<span class="line-chip-count">{blockCommentCount}</span>
+				<span class="line-chip-label">
+					{blockCommentCount === 1 ? 'comment' : 'comments'}
+				</span>
+			</button>
+		{/if}
+		{#if !blockBeingEdited && hasSubAnchors && suggestEdit && blockAllLines.includes(suggestEdit.startLine) && suggestEdit.startLine === suggestEdit.endLine}
+			<!-- Sub-anchor suggest-edit (inside list / table / code). The portal
+			     effect re-parents this div into the matching <li> on mobile-list
+			     blocks; for tables, code, and desktop it stays at its rendered
+			     position underneath the block. -->
+			<div class="suggest-edit-portal" data-portal-line={suggestEdit.startLine}>
+				{@render inlineSuggestEditor()}
+			</div>
+		{/if}
+		{#if !isRail && block.kind === 'list'}
+			<!-- List blocks render one inline-thread per affected sub-line so that
+			     the portal effect (see articleEl effect block) can move each one
+			     inside its matching `<li class="md-sub" data-md-line="N">`. Until
+			     the effect runs (or for sub-lines whose `<li>` isn't found), the
+			     thread stays here at the end of the block — same as it was before
+			     the portal was added. -->
+			{#each block.subLines as subLine (subLine)}
+				{@const subThreads = blockLineGroups.find(([l]) => l === subLine)?.[1] ?? []}
+				{@const showComposer =
+					composer != null && composer.line === subLine && composer.parent == null}
+				{@const showThreads = expandedLines.has(block.line) && subThreads.length > 0}
+				{#if showThreads || showComposer}
+					<div class="inline-thread" data-portal-line={subLine}>
+						{#if showThreads}
+							{@render lineHeader(subLine, subThreads[0].root)}
+							{#each subThreads as thread (thread.root.uri)}
+								{@render threadInline(thread)}
+							{/each}
+						{/if}
+						{#if showComposer}
+							{@render inlineComposer()}
+						{/if}
+					</div>
+				{/if}
+			{/each}
+		{:else if !isRail && expandedLines.has(block.line) && blockLineGroups.length > 0}
+			<div class="inline-thread">
+				{#each blockLineGroups as [groupLine, threads] (groupLine)}
+					{@render lineHeader(groupLine, threads[0].root)}
+					{#each threads as thread (thread.root.uri)}
+						{@render threadInline(thread)}
+					{/each}
+					{#if composer && composer.line === groupLine && composer.parent == null}
+						{@render inlineComposer()}
+					{/if}
+				{/each}
+				{#if composerInBlock && !blockLineGroups.some(([l]) => l === composer?.line)}
+					{@render inlineComposer()}
+				{/if}
+			</div>
+		{:else if !isRail && composerInBlock}
+			<div class="inline-thread">
+				{@render inlineComposer()}
+			</div>
+		{/if}
+	</div>
+{/snippet}
 
 {#snippet inlineSuggestEditor()}
 	{#if suggestEdit}
@@ -2314,6 +2512,116 @@
 	}
 	.prose :global(strong) {
 		font-weight: 700;
+	}
+
+	/* --- Foldable sections ---
+	   Each markdown heading (h2/h3) wraps the blocks beneath it in a
+	   <section class="doc-section">. A subtle 1px rail in the left gutter
+	   marks the section's vertical span; the nested sub-section rail steps
+	   right by a hair so hierarchy reads at a glance without ever indenting
+	   body text — the column stays put. The whole rail is a hit target
+	   (Reddit-style); a small `[▾]`/`[▸]` disclosure glyph at the right of
+	   the heading is the keyboard-reachable toggle. The toggle deliberately
+	   lives outside the per-line gutter so it doesn't compete with the
+	   hover-revealed `¶`/`[+]`/`[~]` affordances or repeat the `[+]`
+	   shape of the add-comment button. Margin-collapse carries through
+	   the wrapper, so the heading rhythm matches the flat layout it
+	   replaced. */
+	.doc-section {
+		position: relative;
+		/* Per-depth rail offset. h2 sits a touch further out; h3 nests
+		   slightly inward so a parent + child rail read as two strokes. */
+		--fold-x: -2.3rem;
+	}
+	.doc-section-h3 {
+		--fold-x: -1.9rem;
+	}
+
+	/* Toggle sits in the heading's right margin, away from the line-affordance
+	   gutter. Always visible at low contrast so the fold is discoverable; the
+	   `[▾]`/`[▸]` disclosure triangles read as fold state rather than as an
+	   add-comment `[+]`. */
+	.section-toggle {
+		position: absolute;
+		top: 0.4em;
+		right: 0;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		letter-spacing: var(--track-tight);
+		line-height: 1;
+		color: var(--ink-4);
+		background: transparent;
+		border: 0;
+		padding: 2px 4px;
+		margin: 0;
+		cursor: pointer;
+		opacity: 0.55;
+		transition:
+			opacity var(--dur-fast) var(--ease-out-quart),
+			color var(--dur-fast) var(--ease-out-quart);
+	}
+	.section-toggle:hover,
+	.section-toggle:focus-visible {
+		opacity: 1;
+		color: var(--accent);
+		outline: none;
+	}
+	.doc-section.is-collapsed > .section-toggle {
+		/* Collapsed sections get a touch more presence so the re-expand
+		   affordance is easy to find when scanning a folded outline. */
+		opacity: 0.8;
+	}
+
+	.section-body {
+		position: relative;
+	}
+	/* The rail: a narrow click strip with a 1px visible line down its centre.
+	   The strip is wider than the line so the hit target is comfortable; the
+	   line thickens and brightens on hover to confirm the trigger. Lives only
+	   under the heading, so the rail never crosses the per-line affordance row
+	   on the heading itself. */
+	.section-fold-rail {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: var(--fold-x);
+		width: var(--space-2);
+		background: transparent;
+		border: 0;
+		padding: 0;
+		margin: 0;
+		cursor: pointer;
+		/* Stays beneath gutter affordances so [+]/[~]/¶ remain clickable
+		   when the cursor crosses the rail. */
+		z-index: 0;
+	}
+	.section-fold-rail::before {
+		content: '';
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: calc(50% - 0.5px);
+		width: 1px;
+		background: var(--rule);
+		transition:
+			width var(--dur-fast) var(--ease-out-quart),
+			left var(--dur-fast) var(--ease-out-quart),
+			background var(--dur-fast) var(--ease-out-quart);
+	}
+	.section-fold-rail:hover::before {
+		width: 2px;
+		left: calc(50% - 1px);
+		background: var(--rule-strong);
+	}
+
+	/* Mobile: rails fall off-screen and add little value at narrow widths
+	   where vertical scroll is the primary scan. The right-aligned toggle
+	   already works on mobile (it's positioned against the section, not
+	   the gutter), so the only change is to suppress the rail. */
+	@media (max-width: 720px) {
+		.section-fold-rail {
+			display: none;
+		}
 	}
 
 	/* --- Line-anchored comment affordance ---

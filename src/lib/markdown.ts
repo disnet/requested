@@ -50,6 +50,9 @@ export type RenderedBlock = {
 	 *  `<li>` elements that can host block-level descendants — see the mobile
 	 *  inline-thread portal). */
 	kind: 'simple' | 'list' | 'table' | 'code';
+	/** Markdown heading depth (1–6) when this block is a heading, else null.
+	 *  The reader uses it to group blocks into foldable sections in the body. */
+	headingDepth: number | null;
 };
 
 export function slugify(text: string): string {
@@ -142,12 +145,15 @@ export function renderMarkdownBlocks(src: string): RenderedBlock[] {
 			kind = 'code';
 		}
 
+		const headingDepth = token.type === 'heading' ? (token as Tokens.Heading).depth : null;
+
 		blocks.push({
 			line: startLine,
 			endLine,
 			html: sanitize(html),
 			subLines,
-			kind
+			kind,
+			headingDepth
 		});
 	}
 
