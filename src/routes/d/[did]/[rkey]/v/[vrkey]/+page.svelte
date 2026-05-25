@@ -3,8 +3,9 @@
 	import { resolve } from '$app/paths';
 	import type { ResolvedPathname } from '$app/types';
 	import { parseAtUri } from '$lib/atproto/documents';
-	import { renderMarkdown } from '$lib/markdown';
+	import { extractToc, renderMarkdown } from '$lib/markdown';
 	import { downloadMarkdown } from '$lib/export';
+	import TableOfContents from '$lib/components/TableOfContents.svelte';
 
 	const { data } = $props();
 
@@ -23,6 +24,7 @@
 		loaded?.version != null && version != null && loaded.version.cid === version.cid
 	);
 	const renderedHtml = $derived(version ? renderMarkdown(version.value.body) : '');
+	const tocEntries = $derived(version ? extractToc(version.value.body) : []);
 
 	const authorHandle = $derived(author?.handle ?? loaded?.did ?? '');
 	const authorDid = $derived(loaded?.did ?? '');
@@ -139,6 +141,8 @@
 				<button type="button" class="action" onclick={onExport}>[ export ]</button>
 			</nav>
 		</header>
+
+		<TableOfContents entries={tocEntries} />
 
 		<div class="prose">
 			<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized by DOMPurify in renderMarkdown -->

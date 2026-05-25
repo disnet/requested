@@ -65,12 +65,27 @@ export function slugify(text: string): string {
 		.slice(0, 80);
 }
 
-function createRenderer() {
+// GitHub-style slug dedupe: first occurrence keeps the bare slug, subsequent
+// ones get `-2`, `-3`, ... appended. Both the renderer and `extractToc` use
+// this so TOC `href`s line up with the rendered heading `id`s.
+function uniqueSlug(base: string, seen: Set<string>): string {
+	if (!seen.has(base)) {
+		seen.add(base);
+		return base;
+	}
+	let n = 2;
+	while (seen.has(`${base}-${n}`)) n += 1;
+	const out = `${base}-${n}`;
+	seen.add(out);
+	return out;
+}
+
+function createRenderer(seenSlugs: Set<string>) {
 	const renderer = new marked.Renderer();
 	const baseHeading = renderer.heading.bind(renderer);
 	renderer.heading = function (token: Tokens.Heading) {
 		const html = baseHeading(token);
-		const id = slugify(token.text);
+		const id = uniqueSlug(slugify(token.text), seenSlugs);
 		return html.replace(/^<h([1-6])>/, `<h$1 id="${id}">`);
 	};
 	return renderer;
@@ -80,7 +95,10 @@ function createRenderer() {
 // records, so sanitizing is mandatory — DOMPurify strips scripts, event
 // handlers, and dangerous URIs from the marked output.
 export function renderMarkdown(src: string): string {
-	const rawHtml = marked.parse(src, { async: false, renderer: createRenderer() }) as string;
+	const rawHtml = marked.parse(src, {
+		async: false,
+		renderer: createRenderer(new Set())
+	}) as string;
 	return sanitize(rawHtml);
 }
 
@@ -100,7 +118,7 @@ export function renderMarkdown(src: string): string {
 // any per-anchor markup we inject. The bodies arrive from arbitrary PDSes,
 // so the sanitize step is non-negotiable.
 export function renderMarkdownBlocks(src: string): RenderedBlock[] {
-	const renderer = createRenderer();
+	const renderer = createRenderer(new Set());
 	const tokens = marked.lexer(src);
 	const links = (tokens as unknown as { links?: Record<string, unknown> }).links;
 
@@ -162,6 +180,64 @@ export function renderMarkdownBlocks(src: string): RenderedBlock[] {
 
 function countNewlines(s: string | undefined): number {
 	return s ? (s.match(/\n/g) ?? []).length : 0;
+}
+
+export type TocEntry = {
+	/** Markdown heading depth, 1–6. */
+	depth: number;
+	/** Heading text (plain — markdown inside the heading is unwrapped by marked). */
+	text: string;
+	/** Slug used as the `id` on the rendered heading and `href` from the TOC.
+	 *  Deduped via `uniqueSlug` so two headings sharing text still get distinct
+	 *  anchors. */
+	slug: string;
+	/** Dotted section number that mirrors the body's CSS counters
+	 *  (h2 → `section`, h3 → `section.sub`, h4 → `section.sub.subsub`). Empty
+	 *  string for h1/h5/h6 since the body renders those unnumbered. */
+	number: string;
+};
+
+// Walk the lexer output, surface every heading as a TOC entry, and assign each
+// a number that matches the body's CSS counter scheme exactly (see the
+// `.prose h2/h3/h4::before` rules on the reader + version-view pages). Slugs
+// share the same dedupe set as `renderMarkdown`/`renderMarkdownBlocks` so a
+// TOC `href` always lands on the matching heading `id`.
+export function extractToc(
+	src: string,
+	opts: { minDepth?: number; maxDepth?: number } = {}
+): TocEntry[] {
+	const minDepth = opts.minDepth ?? 1;
+	const maxDepth = opts.maxDepth ?? 6;
+	const tokens = marked.lexer(src);
+	const seen = new Set<string>();
+	const entries: TocEntry[] = [];
+	// Mirrors the body's `section` / `sub` / `subsub` counters. Indexed by
+	// depth: counters[2] = h2 count, counters[3] = h3 count, counters[4] = h4
+	// count. h1/h5/h6 are not in the numbering scheme.
+	const counters: Record<number, number> = { 2: 0, 3: 0, 4: 0 };
+	for (const token of tokens) {
+		if (token.type !== 'heading') continue;
+		const heading = token as Tokens.Heading;
+		const depth = heading.depth;
+		const slug = uniqueSlug(slugify(heading.text), seen);
+		if (depth === 2) {
+			counters[2] += 1;
+			counters[3] = 0;
+			counters[4] = 0;
+		} else if (depth === 3) {
+			counters[3] += 1;
+			counters[4] = 0;
+		} else if (depth === 4) {
+			counters[4] += 1;
+		}
+		if (depth < minDepth || depth > maxDepth) continue;
+		let number = '';
+		if (depth === 2) number = `${counters[2]}`;
+		else if (depth === 3) number = `${counters[2]}.${counters[3]}`;
+		else if (depth === 4) number = `${counters[2]}.${counters[3]}.${counters[4]}`;
+		entries.push({ depth, text: heading.text, slug, number });
+	}
+	return entries;
 }
 
 // The annotation helpers below splice per-anchor markup into already-rendered
