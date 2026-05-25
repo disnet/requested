@@ -239,7 +239,7 @@
 
 	const isOwner = $derived(loaded != null && auth.did === loaded.did);
 	const renderedBlocks = $derived(
-		loaded?.version ? renderMarkdownBlocks(loaded.version.value.body, { stripLeadingH1: true }) : []
+		loaded?.version ? renderMarkdownBlocks(loaded.version.value.body) : []
 	);
 
 	// Reverse index from any anchor line (block-level OR sub-anchor) to the
@@ -2196,10 +2196,10 @@
 		padding-bottom: var(--space-2);
 		border-bottom: var(--border-thin) solid var(--rule);
 	}
-	/* `h2` is the top of the body outline — the doc title is rendered as an
-	   `<h1>` outside `.prose`, and `stripLeadingH1` removes the source `# Title`
-	   so prose typically starts at `##`. The counter scheme is shifted one
-	   level to match. */
+	/* The doc title is rendered as an `<h1>` outside `.prose` by the page
+	   header, so prose body sections conventionally start at `##` and the
+	   counter scheme tracks that. Authors who use `#` in the body get a
+	   styled but unnumbered heading. */
 	.prose :global(h2) {
 		font-size: var(--text-xl);
 		counter-reset: sub;

@@ -24,17 +24,10 @@ function sanitize(html: string): string {
 	return sanitizeOnServer!(html);
 }
 
-export type RenderOptions = {
-	/** Strip the leading H1 from the rendered output. Used by the reader, which
-	 *  already displays the document title in the metadata block, to avoid
-	 *  double-rendering when authors begin their markdown with `# Title`. */
-	stripLeadingH1?: boolean;
-};
-
 export type RenderedBlock = {
 	/** 1-indexed source line where this top-level block starts. Counted against
-	 *  the *original* body so it matches the line numbers stored on comment
-	 *  records, even when stripLeadingH1 hides the title from the output. */
+	 *  the body source so it matches the line numbers stored on comment
+	 *  records. */
 	line: number;
 	/** 1-indexed source line where this top-level block's content ends
 	 *  (inclusive). Equal to `line` for single-source-line blocks. Used to scope
@@ -83,20 +76,16 @@ function createRenderer() {
 // Render arbitrary markdown to safe HTML. Bodies come from other users' PDS
 // records, so sanitizing is mandatory — DOMPurify strips scripts, event
 // handlers, and dangerous URIs from the marked output.
-export function renderMarkdown(src: string, opts: RenderOptions = {}): string {
-	let body = src;
-	if (opts.stripLeadingH1) {
-		body = body.replace(/^\s*#\s+.*?\n/, '');
-	}
-	const rawHtml = marked.parse(body, { async: false, renderer: createRenderer() }) as string;
+export function renderMarkdown(src: string): string {
+	const rawHtml = marked.parse(src, { async: false, renderer: createRenderer() }) as string;
 	return sanitize(rawHtml);
 }
 
 // Same as renderMarkdown but returns one entry per top-level block, each
 // tagged with its starting source line. Used by the reader to hang a per-line
 // "add comment" affordance off every block without losing the markdown
-// pipeline. Line numbers are counted against the original (pre-strip) body so
-// they line up with the line field on comment records.
+// pipeline. Line numbers are counted against the body source so they line up
+// with the line field on comment records.
 //
 // Composite blocks (lists, tables, fenced/indented code) are additionally
 // post-processed to expose per-item / per-row / per-line sub-anchors: each
@@ -107,14 +96,13 @@ export function renderMarkdown(src: string, opts: RenderOptions = {}): string {
 // All output is sanitized through DOMPurify before being returned, including
 // any per-anchor markup we inject. The bodies arrive from arbitrary PDSes,
 // so the sanitize step is non-negotiable.
-export function renderMarkdownBlocks(src: string, opts: RenderOptions = {}): RenderedBlock[] {
+export function renderMarkdownBlocks(src: string): RenderedBlock[] {
 	const renderer = createRenderer();
 	const tokens = marked.lexer(src);
 	const links = (tokens as unknown as { links?: Record<string, unknown> }).links;
 
 	const blocks: RenderedBlock[] = [];
 	let line = 1;
-	let skippedH1 = false;
 
 	for (const token of tokens) {
 		const startLine = line;
@@ -132,15 +120,6 @@ export function renderMarkdownBlocks(src: string, opts: RenderOptions = {}): Ren
 		const trimmedRaw = raw.replace(/\n*$/, '');
 		const contentLines = trimmedRaw === '' ? 1 : countNewlines(trimmedRaw) + 1;
 		const endLine = startLine + Math.max(0, contentLines - 1);
-		if (
-			opts.stripLeadingH1 &&
-			!skippedH1 &&
-			token.type === 'heading' &&
-			(token as Tokens.Heading).depth === 1
-		) {
-			skippedH1 = true;
-			continue;
-		}
 
 		// marked.parser reads ref-style links off the token list's `links`
 		// property; re-attach the parent lexer's table so references inside a

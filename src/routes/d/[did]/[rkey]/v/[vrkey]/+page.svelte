@@ -21,9 +21,7 @@
 	const isCurrent = $derived(
 		loaded?.version != null && version != null && loaded.version.cid === version.cid
 	);
-	const renderedHtml = $derived(
-		version ? renderMarkdown(version.value.body, { stripLeadingH1: true }) : ''
-	);
+	const renderedHtml = $derived(version ? renderMarkdown(version.value.body) : '');
 
 	const authorHandle = $derived(author?.handle ?? loaded?.did ?? '');
 	const authorDid = $derived(loaded?.did ?? '');
