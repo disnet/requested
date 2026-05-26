@@ -380,8 +380,9 @@
 	function onSectionHeadClick(e: MouseEvent, sectionId: string) {
 		const target = e.target as HTMLElement | null;
 		if (!target) return;
-		if (target.closest('[data-section-toggle]')) {
-			toggleSection(sectionId);
+		const toggle = target.closest<HTMLElement>('[data-section-toggle]');
+		if (toggle) {
+			if (toggle.dataset.sectionToggle === sectionId) toggleSection(sectionId);
 			return;
 		}
 		if (target.closest('button, a, input, select, textarea, summary, label')) return;
