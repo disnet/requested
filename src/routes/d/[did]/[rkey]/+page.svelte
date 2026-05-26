@@ -380,13 +380,21 @@
 	function onSectionHeadClick(e: MouseEvent, sectionId: string) {
 		const target = e.target as HTMLElement | null;
 		if (!target) return;
-		const toggle = target.closest<HTMLElement>('[data-section-toggle]');
-		if (toggle) {
-			if (toggle.dataset.sectionToggle === sectionId) toggleSection(sectionId);
+		// Nested sections share the same delegated handler (one per ancestor
+		// section the event bubbles through). The innermost section owns the
+		// click; anything outside it should defer so a click on a subsection's
+		// heading doesn't also fold the parent (and a click on a parent body
+		// block doesn't fold the parent either).
+		const ownSection = target.closest<HTMLElement>('section[data-section-id]');
+		if (!ownSection || ownSection.dataset.sectionId !== sectionId) return;
+		if (target.closest('[data-section-toggle]')) {
+			toggleSection(sectionId);
 			return;
 		}
 		if (target.closest('button, a, input, select, textarea, summary, label')) return;
-		if (target.closest('.section-body')) return;
+		// Only the heading row folds — clicks inside our own body are ignored.
+		const ownBody = ownSection.querySelector<HTMLElement>(':scope > .section-body');
+		if (ownBody && ownBody.contains(target)) return;
 		const sel = window.getSelection();
 		if (sel && !sel.isCollapsed) return;
 		// Mobile: tap targets the heading for the floating panel instead.
