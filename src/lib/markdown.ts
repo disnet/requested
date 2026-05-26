@@ -80,12 +80,30 @@ function findTopHeadingDepth(tokens: Token[]): number | null {
 	return min;
 }
 
-function createRenderer(topDepth: number | null) {
+// GitHub-style slug dedupe: first occurrence keeps the bare slug, subsequent
+// ones get `-2`, `-3`, ... appended. Both the renderer and `extractToc` share
+// this helper (with a fresh `seen` set per render/extract) so TOC `href`s line
+// up with the rendered heading `id`s — without dedupe, two headings sharing
+// text would emit the same `id` and the TOC link would always scroll to the
+// first one.
+function uniqueSlug(base: string, seen: Set<string>): string {
+	if (!seen.has(base)) {
+		seen.add(base);
+		return base;
+	}
+	let n = 2;
+	while (seen.has(`${base}-${n}`)) n += 1;
+	const out = `${base}-${n}`;
+	seen.add(out);
+	return out;
+}
+
+function createRenderer(topDepth: number | null, seenSlugs: Set<string>) {
 	const renderer = new marked.Renderer();
 	const baseHeading = renderer.heading.bind(renderer);
 	renderer.heading = function (token: Tokens.Heading) {
 		const html = baseHeading(token);
-		const id = slugify(token.text);
+		const id = uniqueSlug(slugify(token.text), seenSlugs);
 		const norm = topDepth != null ? token.depth - topDepth + 1 : null;
 		const normAttr = norm != null ? ` data-h-norm="${norm}"` : '';
 		return html.replace(/^<h([1-6])>/, `<h$1 id="${id}"${normAttr}>`);
@@ -99,7 +117,7 @@ function createRenderer(topDepth: number | null) {
 export function renderMarkdown(src: string): string {
 	const tokens = marked.lexer(src);
 	const topDepth = findTopHeadingDepth(tokens);
-	const rawHtml = marked.parser(tokens, { renderer: createRenderer(topDepth) });
+	const rawHtml = marked.parser(tokens, { renderer: createRenderer(topDepth, new Set()) });
 	return sanitize(rawHtml);
 }
 
@@ -121,7 +139,7 @@ export function renderMarkdown(src: string): string {
 export function renderMarkdownBlocks(src: string): RenderedBlock[] {
 	const tokens = marked.lexer(src);
 	const topDepth = findTopHeadingDepth(tokens);
-	const renderer = createRenderer(topDepth);
+	const renderer = createRenderer(topDepth, new Set());
 	const links = (tokens as unknown as { links?: Record<string, unknown> }).links;
 
 	const blocks: RenderedBlock[] = [];
@@ -182,6 +200,91 @@ export function renderMarkdownBlocks(src: string): RenderedBlock[] {
 
 function countNewlines(s: string | undefined): number {
 	return s ? (s.match(/\n/g) ?? []).length : 0;
+}
+
+export type TocEntry = {
+	/** Normalized 1-based depth. 1 = the shallowest heading the author actually
+	 *  used, regardless of whether they opened with `#` or `##`. Mirrors the
+	 *  `data-h-norm` attribute the renderer puts on each heading so the TOC
+	 *  numbering scheme always matches the body's CSS counters. */
+	depth: number;
+	/** Heading text with inline markdown markers stripped (no `**`/`_`/backticks). */
+	text: string;
+	/** Slug used as the `id` on the rendered heading and the `href` from the
+	 *  TOC. Deduped via `uniqueSlug` so two headings sharing text still get
+	 *  distinct anchors that line up with the renderer's IDs. */
+	slug: string;
+	/** Dotted section number that mirrors the body's CSS counters (norm 1 →
+	 *  `N`, norm 2 → `N.M`, norm 3 → `N.M.O`). Empty string for normalized
+	 *  depths 4+ since the body's counter rules don't number those either. */
+	number: string;
+};
+
+// marked stores `heading.text` as the raw inline source — `## The **foo** API`
+// keeps the literal `**` markers. The parsed inline tree on `heading.tokens`
+// is what actually drops the markers, so we walk it and concatenate each leaf
+// token's `.text` to recover the rendered plain text. Codespans contribute
+// their body without backticks; links/strong/em/etc. recurse through their
+// nested `tokens`.
+function inlineTokensToPlainText(tokens: Token[] | undefined): string {
+	if (!tokens) return '';
+	let out = '';
+	for (const t of tokens) {
+		const children = (t as { tokens?: Token[] }).tokens;
+		if (children && children.length > 0) {
+			out += inlineTokensToPlainText(children);
+		} else if (typeof (t as { text?: unknown }).text === 'string') {
+			out += (t as { text: string }).text;
+		}
+	}
+	return out;
+}
+
+// Walk the lexer output, surface every heading as a TOC entry, and assign each
+// a number that matches the body's CSS counter scheme exactly (see the
+// `.prose [data-h-norm='1'/'2'/'3']::before` rules on the reader + version-view
+// pages). Slugs share the same `uniqueSlug` dedupe scheme as
+// `renderMarkdown`/`renderMarkdownBlocks`, so a TOC `href` always lands on
+// the matching heading `id`.
+export function extractToc(src: string): TocEntry[] {
+	const tokens = marked.lexer(src);
+	const topDepth = findTopHeadingDepth(tokens);
+	if (topDepth == null) return [];
+	const seen = new Set<string>();
+	const entries: TocEntry[] = [];
+	// Counters keyed on normalized depth, mirroring the body's CSS `counter-reset`
+	// rules: a new norm-1 heading resets norms 2 and 3; a new norm-2 resets
+	// norm 3. Deeper normalized levels (4+) aren't numbered.
+	const counters: Record<number, number> = { 1: 0, 2: 0, 3: 0 };
+	for (const token of tokens) {
+		if (token.type !== 'heading') continue;
+		const heading = token as Tokens.Heading;
+		const norm = heading.depth - topDepth + 1;
+		// Keep slug computation byte-identical to the renderer's: same `slugify`
+		// input (`heading.text`), same `uniqueSlug` dedupe ordering.
+		const slug = uniqueSlug(slugify(heading.text), seen);
+		if (norm === 1) {
+			counters[1] += 1;
+			counters[2] = 0;
+			counters[3] = 0;
+		} else if (norm === 2) {
+			counters[2] += 1;
+			counters[3] = 0;
+		} else if (norm === 3) {
+			counters[3] += 1;
+		}
+		let number = '';
+		if (norm === 1) number = `${counters[1]}`;
+		else if (norm === 2) number = `${counters[1]}.${counters[2]}`;
+		else if (norm === 3) number = `${counters[1]}.${counters[2]}.${counters[3]}`;
+		entries.push({
+			depth: norm,
+			text: inlineTokensToPlainText(heading.tokens),
+			slug,
+			number
+		});
+	}
+	return entries;
 }
 
 // The annotation helpers below splice per-anchor markup into already-rendered

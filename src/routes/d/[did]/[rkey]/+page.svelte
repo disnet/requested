@@ -28,10 +28,16 @@
 	} from '$lib/atproto/comments';
 	import type { CommentSuggestion, StrongRef } from '$lib/atproto/lexicons';
 	import { fetchProfile, type Profile } from '$lib/atproto/profile';
-	import { renderMarkdown, renderMarkdownBlocks, type RenderedBlock } from '$lib/markdown';
+	import {
+		extractToc,
+		renderMarkdown,
+		renderMarkdownBlocks,
+		type RenderedBlock
+	} from '$lib/markdown';
 	import { downloadMarkdown } from '$lib/export';
 	import { recordView } from '$lib/viewed-docs';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
+	import TableOfContents from '$lib/components/TableOfContents.svelte';
 
 	const { data } = $props();
 
@@ -273,6 +279,7 @@
 	const renderedBlocks = $derived(
 		loaded?.version ? renderMarkdownBlocks(loaded.version.value.body) : []
 	);
+	const tocEntries = $derived(loaded?.version ? extractToc(loaded.version.value.body) : []);
 
 	// Reverse index from any anchor line (block-level OR sub-anchor) to the
 	// containing block's start line. Used so that opening a composer on, say,
@@ -1476,6 +1483,8 @@
 					{/if}
 				</nav>
 			</header>
+
+			<TableOfContents entries={tocEntries} />
 
 			<div class="prose">
 				{#each docTree as node (node.kind === 'section' ? node.id : `b${node.block.line}`)}
