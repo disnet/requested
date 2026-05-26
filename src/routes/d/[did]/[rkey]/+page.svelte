@@ -102,6 +102,20 @@
 	// SSR is off project-wide, so this is the first paint as far as users see.
 	let isRail = $state(false);
 
+	// Narrow-viewport mode where the gutter buttons used to crowd each block.
+	// Drives the tap-to-target / floating control panel flow that replaces
+	// the per-block affordances at this breakpoint. The 880px threshold
+	// matches the existing CSS cutover (see the @media (max-width: 880px)
+	// block below) — above it, the desktop hover-gutter behavior stays.
+	let isMobile = $state(false);
+
+	// The line a mobile tap has targeted for the floating control panel.
+	// Independent from `activeLine` (transient hover/focus highlight) and
+	// from `linkedLine` (permalink). Null when no block is targeted; cleared
+	// on tap-outside, on ✕, on opening either editor, or when the line ends
+	// up inside a freshly-collapsed section.
+	let activeBlockLine = $state<number | null>(null);
+
 	// Mobile fallback: which line threads are expanded inline. The doc-level
 	// section is always expanded on mobile, so it doesn't need a flag.
 	const expandedLines = new SvelteSet<number>();
@@ -155,6 +169,7 @@
 			expandedLines.clear();
 			collapsedSections.clear();
 			activeLine = null;
+			activeBlockLine = null;
 			linkedLine = null;
 			didInitialHashScroll = false;
 		});
@@ -236,7 +251,22 @@
 			if (e.matches) expandedLines.clear();
 		};
 		mq.addEventListener('change', onChange);
-		return () => mq.removeEventListener('change', onChange);
+
+		const mobileMq = window.matchMedia('(max-width: 880px)');
+		isMobile = mobileMq.matches;
+		const onMobileChange = (e: MediaQueryListEvent) => {
+			isMobile = e.matches;
+			// Resizing back to desktop releases the tap-target so the
+			// floating panel never lingers on a viewport that has the
+			// hover-gutter buttons back.
+			if (!e.matches) activeBlockLine = null;
+		};
+		mobileMq.addEventListener('change', onMobileChange);
+
+		return () => {
+			mq.removeEventListener('change', onChange);
+			mobileMq.removeEventListener('change', onMobileChange);
+		};
 	});
 
 	const isOwner = $derived(loaded != null && auth.did === loaded.did);
@@ -351,6 +381,10 @@
 		if (target.closest('.section-body')) return;
 		const sel = window.getSelection();
 		if (sel && !sel.isCollapsed) return;
+		// Mobile: tap targets the heading for the floating panel instead.
+		// Folding stays available via the explicit [▾]/[▸] glyph in the
+		// heading gutter (data-section-toggle, handled above).
+		if (isMobile) return;
 		toggleSection(sectionId);
 	}
 
@@ -415,6 +449,16 @@
 			}
 		}
 		return out;
+	});
+
+	// If a section gets collapsed while its block was the floating-panel
+	// target, drop the selection so the panel doesn't hover over an empty
+	// viewport with no visible target.
+	$effect(() => {
+		if (activeBlockLine == null) return;
+		if (hiddenLines.has(activeBlockLine)) {
+			activeBlockLine = null;
+		}
 	});
 
 	function expandSectionsContaining(line: number) {
@@ -795,21 +839,109 @@
 
 	// Toggle .is-active on sub-anchors based on activeLine. .md-block uses
 	// Svelte's `class:is-active`, but .md-sub elements live inside {@html}
-	// and need imperative class management.
+	// and need imperative class management. Also reflects activeBlockLine
+	// so the mobile tap-target gets the same outline as the desktop hover
+	// highlight — they're visually identical concepts, just different
+	// triggers.
 	$effect(() => {
 		const article = articleEl;
 		if (!article) return;
 		const al = activeLine;
+		const abl = activeBlockLine;
 		const subs = article.querySelectorAll<HTMLElement>('.md-sub[data-md-line]');
 		for (const el of subs) {
 			const line = Number(el.dataset.mdLine);
-			if (typeof al === 'number' && line === al) {
-				el.classList.add('is-active');
-			} else {
-				el.classList.remove('is-active');
-			}
+			const matched = (typeof al === 'number' && line === al) || (abl != null && line === abl);
+			el.classList.toggle('is-active', matched);
 		}
 	});
+
+	// Mobile-only tap delegation. One document-level click handles three
+	// things: tapping a block targets it, tapping another block re-targets,
+	// tapping outside any block (or hitting the panel's ✕) dismisses.
+	// Interactive elements (buttons, links, the section fold glyph) are
+	// passed through so the existing handlers keep working. Scroll does
+	// not dismiss — only an explicit outside tap does.
+	$effect(() => {
+		if (!isMobile) return;
+		const onDocClick = (e: MouseEvent) => {
+			const target = e.target as HTMLElement | null;
+			if (!target) return;
+			// The floating panel handles its own actions.
+			if (target.closest('.block-control-panel')) return;
+			// Don't intercept anything interactive (gutter section toggle, line
+			// chip, inline composer/editor controls, body links, etc.).
+			if (target.closest('button, a, input, select, textarea, label, [data-section-toggle]')) {
+				return;
+			}
+			const anchor = target.closest<HTMLElement>('[data-md-line]');
+			if (anchor && articleEl?.contains(anchor)) {
+				const line = Number(anchor.dataset.mdLine);
+				if (Number.isFinite(line)) {
+					activeBlockLine = line;
+					return;
+				}
+			}
+			activeBlockLine = null;
+		};
+		document.addEventListener('click', onDocClick);
+		return () => document.removeEventListener('click', onDocClick);
+	});
+
+	// ESC dismisses the floating panel for users with a hardware keyboard.
+	$effect(() => {
+		if (!isMobile || activeBlockLine == null) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') activeBlockLine = null;
+		};
+		document.addEventListener('keydown', onKey);
+		return () => document.removeEventListener('keydown', onKey);
+	});
+
+	// Floating-panel actions. Mirror the existing gutter buttons:
+	// ¶ copies a permalink (panel stays open so the user sees the flash);
+	// [+] opens the composer; [~] opens the suggest-editor with whole-block
+	// vs sub-line range matching the existing gutter-button conventions.
+	function onPanelCopyLink() {
+		if (activeBlockLine == null) return;
+		void copyLineLink(activeBlockLine);
+	}
+
+	function onPanelComment() {
+		if (activeBlockLine == null) return;
+		tryOpenComposer(activeBlockLine);
+	}
+
+	function onPanelSuggestEdit() {
+		if (activeBlockLine == null) return;
+		const line = activeBlockLine;
+		const blockLine = subToBlock.get(line) ?? line;
+		const block = renderedBlocks.find((b) => b.line === blockLine);
+		if (!block) {
+			tryOpenSuggestEdit(line, line);
+			return;
+		}
+		// Whole-block edit when the user tapped a plain block (no sub-anchors)
+		// or any sub-line inside a list or code block — mirrors the
+		// block-level [~] button and the sub-anchor [~] handler at the
+		// article-level click delegation. Table rows stay row-scoped.
+		const isBlockLevelTap = block.subLines.length === 0 || line === block.line;
+		if (isBlockLevelTap || block.kind === 'list' || block.kind === 'code') {
+			tryOpenSuggestEdit(block.line, block.endLine);
+		} else {
+			tryOpenSuggestEdit(line, line);
+		}
+	}
+
+	function onPanelClose() {
+		activeBlockLine = null;
+	}
+
+	// Show the panel only on mobile, with a target set, and only when the
+	// inline editors aren't taking over the screen.
+	const showBlockPanel = $derived(
+		isMobile && activeBlockLine != null && composer == null && suggestEdit == null
+	);
 
 	// Mirror of the is-active effect for permalink highlights. Kept separate so
 	// the persistent `.is-linked` class doesn't toggle on every hover.
@@ -886,6 +1018,9 @@
 			suggestEdit = null;
 			suggestError = null;
 		}
+		// Opening the composer hands off mobile UI to the inline editor;
+		// the floating control panel steps aside.
+		activeBlockLine = null;
 		composer = { line, parent: null, replyToHandle: null };
 		composerBody = '';
 		composerError = null;
@@ -953,6 +1088,9 @@
 			.split('\n')
 			.slice(startLine - 1, endLine)
 			.join('\n');
+		// Opening the inline editor hands off mobile UI to it; the floating
+		// control panel steps aside (matches openComposer's behavior).
+		activeBlockLine = null;
 		suggestEdit = { startLine, endLine, replacement };
 		suggestError = null;
 		// Mobile: expand the containing block so the swapped-in editor is in view.
@@ -1424,6 +1562,54 @@
 			{/if}
 		</section>
 	{/if}
+
+	{#if showBlockPanel}
+		<div
+			class="block-control-panel"
+			role="toolbar"
+			aria-label={`Actions for line ${activeBlockLine}`}
+		>
+			<button
+				type="button"
+				class="block-control-btn block-control-link"
+				aria-label={`Copy link to line ${activeBlockLine}`}
+				onclick={onPanelCopyLink}
+			>
+				<span class="block-control-glyph" aria-hidden="true">¶</span>
+				<span class="block-control-label">link</span>
+			</button>
+			<button
+				type="button"
+				class="block-control-btn block-control-comment"
+				aria-label={auth.status === 'signed-in'
+					? `Comment on line ${activeBlockLine}`
+					: `Sign in to comment on line ${activeBlockLine}`}
+				onclick={onPanelComment}
+			>
+				<span class="block-control-glyph" aria-hidden="true">[+]</span>
+				<span class="block-control-label">comment</span>
+			</button>
+			<button
+				type="button"
+				class="block-control-btn block-control-edit"
+				aria-label={auth.status === 'signed-in'
+					? `Suggest an edit at line ${activeBlockLine}`
+					: `Sign in to suggest an edit at line ${activeBlockLine}`}
+				onclick={onPanelSuggestEdit}
+			>
+				<span class="block-control-glyph" aria-hidden="true">[~]</span>
+				<span class="block-control-label">edit</span>
+			</button>
+			<button
+				type="button"
+				class="block-control-close"
+				aria-label="Close block actions"
+				onclick={onPanelClose}
+			>
+				<span aria-hidden="true">[ ✕ ]</span>
+			</button>
+		</div>
+	{/if}
 {/if}
 
 {#if flashMsg}
@@ -1472,7 +1658,7 @@
 		0
 	)}
 	{@const hasSubAnchors = block.subLines.length > 0}
-	{@const isActive = activeLine === block.line}
+	{@const isActive = activeLine === block.line || activeBlockLine === block.line}
 	{@const composerInBlock =
 		composer != null &&
 		composer.line != null &&
@@ -3297,36 +3483,17 @@
 		.meta-actions {
 			justify-content: flex-start;
 		}
-		/* Block-level affordances on mobile: position absolutely at the top of
-		   the block so they don't add a line-box (which on desktop the negative
-		   gutter avoids by hover-hiding). .md-block gets a small padding-top to
-		   (a) reserve room for the buttons and (b) break margin-collapse — without
-		   padding/border, h2's --space-7 margin-top would collapse straight
-		   through the empty .md-block, leaving buttons stranded far above the
-		   heading. h2/h3/h4 margin-top is also tightened on mobile since the
-		   padding-top now provides the section-break breathing room. */
-		.prose :global(.md-block) {
-			padding-top: 1.4em;
-		}
+		/* Below 880px the desktop hover-gutter affordances are unreachable on
+		   touch and were previously stacked above each block at half opacity —
+		   visually noisy on a phone. Hide them outright; the floating
+		   .block-control-panel takes over on tap. */
 		.prose :global(.md-link-btn),
 		.prose :global(.md-comment-btn),
-		.prose :global(.md-edit-btn) {
-			position: absolute;
-			top: 0;
-			line-height: 1;
-			width: auto;
-			opacity: 0.5;
-			margin: 0;
-			transform: none;
-		}
-		.prose :global(.md-link-btn) {
-			left: 0;
-		}
-		.prose :global(.md-comment-btn) {
-			left: 2em;
-		}
-		.prose :global(.md-edit-btn) {
-			left: 4.5em;
+		.prose :global(.md-edit-btn),
+		.prose :global(.md-sub-link),
+		.prose :global(.md-sub-btn),
+		.prose :global(.md-sub-edit-btn) {
+			display: none;
 		}
 		.prose :global(h1),
 		.prose :global(h2),
@@ -3345,66 +3512,116 @@
 		.prose :global([data-h-norm='3']) {
 			padding-right: var(--space-5);
 		}
-		.prose :global(.md-sub-btn),
-		.prose :global(.md-sub-link),
-		.prose :global(.md-sub-edit-btn) {
-			line-height: 1;
-			opacity: 0.5;
-			transform: none;
+		/* Floating panel obscures a strip of viewport bottom — extend the
+		   article's bottom padding so the user can scroll the last block
+		   above the panel and still tap it without the panel covering it. */
+		.doc-shell {
+			padding-bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
 		}
-		/* Table-row sub-anchors: desktop offsets them into the negative gutter
-		   (left: calc(-1 * var(--space-3) - 3rem)), which is off-screen on mobile
-		   since there's no left margin. Pull them inside the first cell instead. */
-		.prose :global(tr.md-sub > td:first-child > .md-sub-btn),
-		.prose :global(tr.md-sub > th:first-child > .md-sub-btn) {
-			left: 2em;
+		/* Larger tap-target than the desktop ~10px gutter buttons. The
+		   tap-active block gets a slightly thicker outline so users can see
+		   what they targeted. */
+		.prose :global(.md-block.is-active) {
+			background: color-mix(in oklch, var(--accent-fade) 75%, transparent);
+			box-shadow: inset 2px 0 0 var(--rule-strong);
 		}
-		.prose :global(tr.md-sub > td:first-child > .md-sub-link),
-		.prose :global(tr.md-sub > th:first-child > .md-sub-link) {
-			left: 0;
+	}
+
+	/* Floating mobile control panel. Pinned to the bottom of the viewport,
+	   spans the full width, sits above the safe-area inset on notched
+	   devices. The hairline top rule and `--surface` background read as the
+	   document chrome continuing past the column edge — same vocabulary as
+	   the page header and the rail-head, not an iOS-style overlay. The
+	   panel slides in from below on appear; reduced-motion fades opacity
+	   only. Sized to 48px (above the row of inset) — generous enough for
+	   thumb taps and matches the meta-actions row's hit density elsewhere
+	   in the doc shell. */
+	.block-control-panel {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		z-index: 50;
+		display: flex;
+		align-items: stretch;
+		gap: 0;
+		background: var(--surface);
+		border-top: var(--border-thin) solid var(--rule-strong);
+		padding: 0 var(--space-3) env(safe-area-inset-bottom, 0px);
+		font-family: var(--font-mono);
+		animation: block-control-rise var(--dur-mid) var(--ease-out-quart);
+	}
+	@keyframes block-control-rise {
+		from {
+			transform: translateY(100%);
 		}
-		.prose :global(tr.md-sub > td:first-child > .md-sub-edit-btn),
-		.prose :global(tr.md-sub > th:first-child > .md-sub-edit-btn) {
-			left: 4.5em;
+		to {
+			transform: translateY(0);
 		}
-		/* List items and code lines wrap text and live inside their own line
-		   element, so the inline static placement above puts [+]/¶ on the same
-		   visual line as the first character. Reserve space above each row and
-		   absolutely position the buttons there so they land *above* the line
-		   instead — matching the paragraph case. Buttons use `left: 0` so they
-		   sit inside the row (important for code, where `<pre>`'s `overflow-x`
-		   would clip anything in the negative gutter). `.md-code-line` is
-		   re-promoted to a positioning context here: desktop deliberately leaves
-		   it static so buttons anchor to `.md-block`, but mobile positions them
-		   inside the line's own padding, so the line needs to be the CB. */
-		.prose :global(li.md-sub),
-		.prose :global(.md-code-line) {
-			padding-top: 1.2em;
+	}
+	.block-control-btn,
+	.block-control-close {
+		flex: 1 1 0;
+		min-height: 48px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-2);
+		background: transparent;
+		border: 0;
+		border-radius: 0;
+		color: var(--ink-2);
+		font-family: inherit;
+		font-size: var(--text-sm);
+		letter-spacing: var(--track-tight);
+		cursor: pointer;
+		transition: color var(--dur-fast) var(--ease-out-quart);
+	}
+	.block-control-btn:active,
+	.block-control-close:active {
+		background: color-mix(in oklch, var(--rule) 40%, transparent);
+	}
+	.block-control-btn:focus-visible,
+	.block-control-close:focus-visible {
+		outline: var(--border-thick) solid var(--accent);
+		outline-offset: -3px;
+	}
+	.block-control-glyph {
+		color: var(--ink-3);
+		font-size: var(--text-xs);
+	}
+	.block-control-label {
+		color: var(--ink-2);
+	}
+	.block-control-comment:hover .block-control-glyph,
+	.block-control-comment:active .block-control-glyph {
+		color: var(--accent);
+	}
+	.block-control-edit:hover .block-control-glyph,
+	.block-control-edit:active .block-control-glyph {
+		color: var(--addition);
+	}
+	.block-control-close {
+		flex: 0 0 auto;
+		min-width: 3rem;
+		color: var(--ink-3);
+		font-size: var(--text-xs);
+	}
+	.block-control-close:hover {
+		color: var(--ink);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.block-control-panel {
+			animation: block-control-fade var(--dur-fast) linear;
 		}
-		.prose :global(.md-code-line) {
-			position: relative;
-		}
-		.prose :global(li.md-sub > .md-sub-link),
-		.prose :global(li.md-sub > .md-sub-btn),
-		.prose :global(li.md-sub > .md-sub-edit-btn),
-		.prose :global(.md-code-line > .md-sub-link),
-		.prose :global(.md-code-line > .md-sub-btn),
-		.prose :global(.md-code-line > .md-sub-edit-btn) {
-			position: absolute;
-			top: 0;
-			margin-right: 0;
-		}
-		.prose :global(li.md-sub > .md-sub-link),
-		.prose :global(.md-code-line > .md-sub-link) {
-			left: 0;
-		}
-		.prose :global(li.md-sub > .md-sub-btn),
-		.prose :global(.md-code-line > .md-sub-btn) {
-			left: 2em;
-		}
-		.prose :global(li.md-sub > .md-sub-edit-btn),
-		.prose :global(.md-code-line > .md-sub-edit-btn) {
-			left: 4.5em;
+		@keyframes block-control-fade {
+			from {
+				opacity: 0;
+			}
+			to {
+				opacity: 1;
+			}
 		}
 	}
 
