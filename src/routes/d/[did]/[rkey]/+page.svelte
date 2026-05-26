@@ -789,7 +789,12 @@
 			const l = resolveLine(e.target);
 			if (l != null) setActiveLine(l);
 		};
-		const onFocusOut = () => setActiveLine(null);
+		// Deferred: when an editor block is cancelled the focused element is
+		// removed during Svelte's flush, which fires `focusout` synchronously
+		// inside `remove_effect_dom`. Writing $state from there throws
+		// `state_unsafe_mutation`. Push the reset to a microtask so it lands
+		// after the flush completes.
+		const onFocusOut = () => queueMicrotask(() => setActiveLine(null));
 		article.addEventListener('mouseover', onOver);
 		article.addEventListener('mouseleave', onLeave);
 		article.addEventListener('focusin', onFocusIn);
