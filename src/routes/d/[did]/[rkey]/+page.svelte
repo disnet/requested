@@ -26,7 +26,7 @@
 		type LoadedResolution,
 		type Thread
 	} from '$lib/atproto/comments';
-	import type { CommentSuggestion, StrongRef } from '$lib/atproto/lexicons';
+	import { versionMarkdown, type CommentSuggestion, type StrongRef } from '$lib/atproto/lexicons';
 	import { fetchProfile, type Profile } from '$lib/atproto/profile';
 	import {
 		extractToc,
@@ -232,7 +232,7 @@
 				const current = {
 					uri: doc.version.uri,
 					cid: doc.version.cid,
-					body: doc.version.value.body
+					body: versionMarkdown(doc.version.value)
 				};
 				const entries = await Promise.all(
 					list.map(
@@ -277,9 +277,11 @@
 
 	const isOwner = $derived(loaded != null && auth.did === loaded.did);
 	const renderedBlocks = $derived(
-		loaded?.version ? renderMarkdownBlocks(loaded.version.value.body) : []
+		loaded?.version ? renderMarkdownBlocks(versionMarkdown(loaded.version.value)) : []
 	);
-	const tocEntries = $derived(loaded?.version ? extractToc(loaded.version.value.body) : []);
+	const tocEntries = $derived(
+		loaded?.version ? extractToc(versionMarkdown(loaded.version.value)) : []
+	);
 
 	// Reverse index from any anchor line (block-level OR sub-anchor) to the
 	// containing block's start line. Used so that opening a composer on, say,
@@ -567,7 +569,7 @@
 		const myDid = auth.did;
 		if (!myDid || myDid !== documentAuthorDid) return false;
 		const sugg = thread.root.value.suggestion;
-		const body = loaded?.version?.value.body;
+		const body = loaded?.version ? versionMarkdown(loaded.version.value) : undefined;
 		if (!sugg || !body) return false;
 		return findSuggestionAnchor(body, sugg) != null;
 	}
@@ -1011,7 +1013,7 @@
 
 	function onExport() {
 		if (!loaded?.version) return;
-		downloadMarkdown(loaded.value.title, loaded.version.value.body, loaded.rkey);
+		downloadMarkdown(loaded.value.title, versionMarkdown(loaded.version.value), loaded.rkey);
 	}
 
 	function tryOpenComposer(line: number | null) {
@@ -1093,7 +1095,7 @@
 	}
 
 	function openSuggestEdit(startLine: number, endLine: number) {
-		const body = loaded?.version?.value.body;
+		const body = loaded?.version ? versionMarkdown(loaded.version.value) : undefined;
 		if (!body) return;
 		if (
 			composer &&
@@ -1182,7 +1184,7 @@
 		applyBusy.add(rootUri);
 		applyError.delete(rootUri);
 		try {
-			const patched = applySuggestion(doc.version.value.body, sugg);
+			const patched = applySuggestion(versionMarkdown(doc.version.value), sugg);
 			const { versionUri, versionCid } = await saveNewVersion(agent, myDid, doc, patched);
 			await createResolution(
 				agent,
@@ -1325,7 +1327,7 @@
 		if (suggestPosting) return;
 		if (!agent || !myDid || !doc?.version || !current) return;
 
-		const lines = doc.version.value.body.split('\n');
+		const lines = versionMarkdown(doc.version.value).split('\n');
 		const original = lines.slice(current.startLine - 1, current.endLine).join('\n');
 		if (current.replacement === original) {
 			suggestError = 'Suggested edit is identical to the original.';
@@ -1336,7 +1338,7 @@
 		suggestError = null;
 		try {
 			const suggestion = buildSuggestionAnchor(
-				doc.version.value.body,
+				versionMarkdown(doc.version.value),
 				current.startLine,
 				current.replacement,
 				current.endLine
@@ -1914,7 +1916,10 @@
 			</code>
 			<span class="anchor-aside anchor-aside-warn">removed</span>
 		{:else}
-			{@const lineText = getLineText(loaded?.version?.value.body, line)}
+			{@const lineText = getLineText(
+				loaded?.version ? versionMarkdown(loaded.version.value) : undefined,
+				line
+			)}
 			<code class="line-excerpt" title={lineText || '(empty line)'}>
 				{lineText || '(empty line)'}
 			</code>
@@ -2124,7 +2129,10 @@
 			</code>
 			<span class="rail-card-aside rail-card-aside-warn">removed</span>
 		{:else}
-			{@const lineText = getLineText(loaded?.version?.value.body, item.line)}
+			{@const lineText = getLineText(
+				loaded?.version ? versionMarkdown(loaded.version.value) : undefined,
+				item.line
+			)}
 			<code class="rail-line-excerpt" title={lineText || '(empty line)'}>
 				{lineText || '(empty line)'}
 			</code>

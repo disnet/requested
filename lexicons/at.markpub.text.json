@@ -1,0 +1,33 @@
+{
+	"lexicon": 1,
+	"id": "at.markpub.text",
+	"defs": {
+		"main": {
+			"type": "object",
+			"description": "Markdown text with optional rich-text facets. Owned by markpub.at (https://markpub.at) — this file is a local mirror for documentation/types, not an authored lexicon. Embedded inside at.markpub.markdown. Requested only ever populates `markdown`.",
+			"required": ["markdown"],
+			"properties": {
+				"markdown": {
+					"type": "string",
+					"description": "The raw markdown source, valid for the enclosing block's flavor."
+				},
+				"textBlob": {
+					"type": "blob",
+					"accept": ["text/*"],
+					"maxSize": 1000000,
+					"description": "Optional blob holding the markdown, overriding `markdown` when present. Unused by Requested."
+				},
+				"facets": {
+					"type": "array",
+					"items": { "type": "union", "closed": false, "refs": [] },
+					"description": "Open union of rendered facets over byte ranges of the markdown. Unused by Requested (we re-render from source)."
+				},
+				"lenses": {
+					"type": "array",
+					"items": { "type": "union", "closed": false, "refs": [] },
+					"description": "Open union of lenses translating between facet types. Unused by Requested."
+				}
+			}
+		}
+	}
+}

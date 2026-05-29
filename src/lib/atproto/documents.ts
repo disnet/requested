@@ -1,6 +1,7 @@
 import type { Agent } from '@atproto/api';
 import { CACHE_TTL, edgeCache } from './edge-cache';
 import {
+	buildMarkpubMarkdown,
 	DOCUMENT_NSID,
 	DOCUMENT_VERSION_NSID,
 	type DocumentRecord,
@@ -91,7 +92,7 @@ export async function createDocument(
 
 	const versionRecord: DocumentVersionRecord = {
 		document: docRes.data.uri,
-		body,
+		content: buildMarkpubMarkdown(body),
 		createdAt
 	};
 	const versionRes = await agent.com.atproto.repo.createRecord({
@@ -128,7 +129,7 @@ export async function saveNewVersion(
 
 	const versionRecord: DocumentVersionRecord = {
 		document: doc.uri,
-		body,
+		content: buildMarkpubMarkdown(body),
 		createdAt,
 		previousVersion: { uri: doc.version.uri, cid: doc.version.cid }
 	};

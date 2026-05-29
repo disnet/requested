@@ -3,6 +3,7 @@
 	import { resolve } from '$app/paths';
 	import type { ResolvedPathname } from '$app/types';
 	import { parseAtUri } from '$lib/atproto/documents';
+	import { versionMarkdown } from '$lib/atproto/lexicons';
 	import { extractToc, renderMarkdown } from '$lib/markdown';
 	import { downloadMarkdown } from '$lib/export';
 	import TableOfContents from '$lib/components/TableOfContents.svelte';
@@ -23,8 +24,8 @@
 	const isCurrent = $derived(
 		loaded?.version != null && version != null && loaded.version.cid === version.cid
 	);
-	const renderedHtml = $derived(version ? renderMarkdown(version.value.body) : '');
-	const tocEntries = $derived(version ? extractToc(version.value.body) : []);
+	const renderedHtml = $derived(version ? renderMarkdown(versionMarkdown(version.value)) : '');
+	const tocEntries = $derived(version ? extractToc(versionMarkdown(version.value)) : []);
 
 	const authorHandle = $derived(author?.handle ?? loaded?.did ?? '');
 	const authorDid = $derived(loaded?.did ?? '');
@@ -42,7 +43,7 @@
 	function onExport() {
 		if (!loaded || !version) return;
 		const title = loaded.value.title + (versionIndex ? ` v${versionIndex.n}` : '');
-		downloadMarkdown(title, version.value.body, version.rkey);
+		downloadMarkdown(title, versionMarkdown(version.value), version.rkey);
 	}
 </script>
 
