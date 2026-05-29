@@ -3,6 +3,7 @@ import { fetchRecord, getVersionByUri, parseAtUri, resolvePdsEndpoint } from './
 import {
 	COMMENT_NSID,
 	THREAD_RESOLUTION_NSID,
+	versionMarkdown,
 	type CommentRecord,
 	type CommentSuggestion,
 	type StrongRef,
@@ -461,7 +462,7 @@ export async function describeCommentVersionState(
 		const old = await getVersionByUri(comment.version.uri);
 		return {
 			kind: 'line-stale',
-			shift: resolveLineShift(old.body, currentVersion.body, comment.line)
+			shift: resolveLineShift(versionMarkdown(old), currentVersion.body, comment.line)
 		};
 	} catch {
 		// Old version unreachable (deleted, PDS down) — fall back to "lost".

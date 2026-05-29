@@ -1,0 +1,37 @@
+{
+	"lexicon": 1,
+	"id": "at.markpub.markdown",
+	"defs": {
+		"main": {
+			"type": "object",
+			"description": "A block of markdown text with metadata about its flavor and renderer. Owned by markpub.at (https://markpub.at) — this file is a local mirror for documentation/types, not an authored lexicon. Designed as an embedded object, not a record; Requested embeds it as fyi.requested.documentVersion.content.",
+			"required": ["text"],
+			"properties": {
+				"text": {
+					"type": "ref",
+					"ref": "at.markpub.text",
+					"description": "The markdown text (and any optional rich-text facets)."
+				},
+				"flavor": {
+					"type": "string",
+					"knownValues": ["gfm", "commonmark"],
+					"description": "Markdown flavor. Requested writes 'gfm'."
+				},
+				"renderingRules": {
+					"type": "string",
+					"description": "The renderer the author expects. Consumers may honor it but are not obligated to. Requested writes 'marked'."
+				},
+				"extensions": {
+					"type": "array",
+					"items": { "type": "string" },
+					"description": "Expected markdown extensions, e.g. 'LaTeX', 'YAML'."
+				},
+				"frontMatter": {
+					"type": "array",
+					"items": { "type": "union", "closed": false, "refs": [] },
+					"description": "Optional parsed front matter, when separated out of the raw markdown."
+				}
+			}
+		}
+	}
+}

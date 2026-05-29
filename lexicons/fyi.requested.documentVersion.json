@@ -8,18 +8,23 @@
 			"key": "tid",
 			"record": {
 				"type": "object",
-				"required": ["document", "body", "createdAt"],
+				"required": ["document", "content", "createdAt"],
 				"properties": {
 					"document": {
 						"type": "string",
 						"format": "at-uri",
 						"description": "AT-URI of the fyi.requested.document this version belongs to. Not a strongRef because the document record mutates over time (currentVersion changes on every edit) — pinning to a CID would always be stale."
 					},
+					"content": {
+						"type": "ref",
+						"ref": "at.markpub.markdown",
+						"description": "The document body as an embedded at.markpub.markdown object (markpub.at lexicon), making the markdown portable across the markpub ecosystem. The raw markdown source is content.text.markdown. Rendered client-side; no embedded HTML is trusted."
+					},
 					"body": {
 						"type": "string",
 						"maxLength": 400000,
 						"maxGraphemes": 200000,
-						"description": "Markdown source. Rendered client-side; no embedded HTML is trusted."
+						"description": "DEPRECATED. Legacy raw markdown source, present only on versions written before the markpub migration. New versions write `content` instead. Readers fall back to this field when `content` is absent."
 					},
 					"createdAt": {
 						"type": "string",

@@ -39,10 +39,10 @@ Svelte 5 **runes mode is forced** for all project files (`svelte.config.js`). Us
 
 ### atproto data model (`src/lib/atproto/`)
 
-Three NSIDs, all under `fyi.requested.*` (reverse domain of `requested.fyi`). The JSON lexicons in `/lexicons` are authoritative; `src/lib/atproto/lexicons.ts` mirrors them as TypeScript types and exports the NSID constants.
+Our own NSIDs all live under `fyi.requested.*` (reverse domain of `requested.fyi`). The JSON lexicons in `/lexicons` are authoritative; `src/lib/atproto/lexicons.ts` mirrors them as TypeScript types and exports the NSID constants. We also embed two **external** lexicons owned by markpub.at (`at.markpub.markdown`, `at.markpub.text`) — `/lexicons/at.markpub.*.json` are local mirrors for documentation only (we don't author them, same as `com.atproto.repo.strongRef`).
 
 - **`document`** — title + `currentVersion` strongRef. Mutable (pointer moves on every edit).
-- **`documentVersion`** — immutable body snapshot, chained via `previousVersion` strongRef. The split exists so comments can pin to an immutable CID while the document pointer keeps moving.
+- **`documentVersion`** — immutable body snapshot, chained via `previousVersion` strongRef. The split exists so comments can pin to an immutable CID while the document pointer keeps moving. The body is stored in `content`, an embedded **`at.markpub.markdown`** object (markpub.at's markdown lexicon — `content.text.markdown` holds the raw GFM source, `flavor: gfm`, `renderingRules: marked`), so the markdown is portable across the markpub ecosystem. A legacy raw-string `body` field is read-only fallback for pre-markpub versions. **Never read `.body` directly** — use `versionMarkdown(value)` from `lexicons.ts`, which prefers `content` and falls back to `body`. New versions are written via `buildMarkpubMarkdown`.
 - **`comment`** — lives on the **commenter's** PDS, not the document author's. References the `document` by plain at-uri (mutable target) and the `documentVersion` by strongRef (immutable snapshot the commenter actually saw). Optional `line` for line-anchored comments; optional `parent` strongRef for threading.
 
 Creating a document is **three writes** (`createDocument` in `documents.ts`): create doc without `currentVersion` → create version pointing at the doc → `putRecord` the doc to set `currentVersion`. Editing is two writes (new version → `putRecord` doc with `swapRecord` guard).

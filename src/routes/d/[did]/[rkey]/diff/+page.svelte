@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { diffLines, type Change } from 'diff';
+	import { versionMarkdown } from '$lib/atproto/lexicons';
 
 	const { data } = $props();
 
@@ -14,7 +15,7 @@
 
 	const chunks: DiffLine[] = $derived.by(() => {
 		if (!from || !to) return [];
-		const raw: Change[] = diffLines(from.value.body, to.value.body);
+		const raw: Change[] = diffLines(versionMarkdown(from.value), versionMarkdown(to.value));
 		const out: DiffLine[] = [];
 		let n = 0;
 		for (const c of raw) {

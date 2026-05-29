@@ -5,6 +5,7 @@
 	import Composer from '$lib/components/Composer.svelte';
 	import { auth } from '$lib/atproto/auth.svelte';
 	import { getDocument, saveNewVersion, type LoadedDocument } from '$lib/atproto/documents';
+	import { versionMarkdown } from '$lib/atproto/lexicons';
 
 	let loaded = $state<LoadedDocument | null>(null);
 	let body = $state('');
@@ -26,8 +27,8 @@
 					return;
 				}
 				loaded = doc;
-				body = doc.version.value.body;
-				originalBody = doc.version.value.body;
+				body = versionMarkdown(doc.version.value);
+				originalBody = versionMarkdown(doc.version.value);
 			} catch (err) {
 				error = err instanceof Error ? err.message : String(err);
 			}
