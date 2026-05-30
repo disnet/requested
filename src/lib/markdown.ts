@@ -157,7 +157,14 @@ function createRenderer(topDepth: number | null, seenSlugs: Set<string>) {
 export function renderMarkdown(src: string): string {
 	const tokens = marked.lexer(src);
 	const topDepth = findTopHeadingDepth(tokens);
-	const rawHtml = marked.parser(tokens, { renderer: createRenderer(topDepth, new Set()) });
+	// Spread marked.defaults so the registered `mention` inline extension
+	// (marked.use above) stays wired into the parser — passing a bare
+	// `{ renderer }` replaces defaults wholesale, dropping options.extensions and
+	// making the parser throw on the custom `mention` token the lexer produced.
+	const rawHtml = marked.parser(tokens, {
+		...marked.defaults,
+		renderer: createRenderer(topDepth, new Set())
+	});
 	return sanitize(rawHtml);
 }
 
@@ -207,7 +214,7 @@ export function renderMarkdownBlocks(src: string): RenderedBlock[] {
 		// single token still resolve.
 		const sub: Token[] = [token];
 		(sub as unknown as { links: typeof links }).links = links;
-		const rawHtml = marked.parser(sub, { renderer });
+		const rawHtml = marked.parser(sub, { ...marked.defaults, renderer });
 
 		let html = rawHtml;
 		let subLines: number[] = [];
