@@ -5,6 +5,7 @@ export const DOCUMENT_NSID = 'fyi.requested.document';
 export const DOCUMENT_VERSION_NSID = 'fyi.requested.documentVersion';
 export const COMMENT_NSID = 'fyi.requested.comment';
 export const THREAD_RESOLUTION_NSID = 'fyi.requested.threadResolution';
+export const MENTION_NSID = 'fyi.requested.mention';
 
 // Embedded markdown lexicons owned by markpub.at (https://markpub.at). We don't
 // author these — like com.atproto.repo.strongRef they're external NSIDs we
@@ -100,5 +101,16 @@ export type ThreadResolutionRecord = {
 	thread: StrongRef;
 	document: string;
 	appliedIn?: StrongRef;
+	createdAt: string;
+};
+
+// fyi.requested.mention — written by the document author when they @mention an
+// account in a version body. Lives on the author's PDS; the mentioned account
+// (subject) discovers it via a Constellation backlink query on `subject`.
+export type MentionRecord = {
+	$type?: typeof MENTION_NSID;
+	subject: string;
+	document: string;
+	version: StrongRef;
 	createdAt: string;
 };

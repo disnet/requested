@@ -2,10 +2,62 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { EditorView, basicSetup } from 'codemirror';
 	import { EditorState, Compartment } from '@codemirror/state';
-	import { markdown } from '@codemirror/lang-markdown';
+	import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+	import { syntaxTree } from '@codemirror/language';
+	import type { SyntaxNode } from '@lezer/common';
+	import type { CompletionContext, CompletionResult } from '@codemirror/autocomplete';
 	import { theme } from '$lib/theme.svelte';
+	import { searchActorsTypeahead } from '$lib/atproto/profile';
 
 	let { value = $bindable('') }: { value?: string } = $props();
+
+	// Abort the previous typeahead request when a new keystroke supersedes it.
+	// CodeMirror already debounces source invocation (activateOnTypingDelay) and
+	// discards results for stale positions, so this only bounds in-flight fetches.
+	let mentionAbort: AbortController | null = null;
+
+	// Don't offer handle completions while the cursor sits inside fenced or
+	// inline code — a literal `@foo` there isn't a mention.
+	function inCodeContext(context: CompletionContext): boolean {
+		let node: SyntaxNode | null = syntaxTree(context.state).resolveInner(context.pos, -1);
+		for (; node; node = node.parent) {
+			if (/Code/.test(node.name)) return true;
+		}
+		return false;
+	}
+
+	async function mentionCompletions(context: CompletionContext): Promise<CompletionResult | null> {
+		// Match the `@` token under the cursor. Handles can contain letters,
+		// digits, dots and hyphens.
+		const token = context.matchBefore(/@[a-zA-Z0-9.-]*/);
+		if (!token) return null;
+		const query = token.text.slice(1);
+		// Require at least two chars after `@` before hitting the network — unless
+		// the completion was explicitly requested (Ctrl-Space).
+		if (query.length < 2 && !context.explicit) return null;
+		if (inCodeContext(context)) return null;
+
+		mentionAbort?.abort();
+		mentionAbort = new AbortController();
+		let actors;
+		try {
+			actors = await searchActorsTypeahead(query, 8, mentionAbort.signal);
+		} catch {
+			return null;
+		}
+		if (actors.length === 0) return null;
+
+		return {
+			from: token.from,
+			options: actors.map((a) => ({
+				label: '@' + a.handle,
+				detail: a.displayName,
+				apply: '@' + a.handle + ' '
+			})),
+			// Keep the list open and filtered while the user keeps typing handle chars.
+			validFor: /^@[a-zA-Z0-9.-]*$/
+		};
+	}
 
 	let container: HTMLDivElement;
 	let view: EditorView | null = null;
@@ -74,6 +126,9 @@
 				extensions: [
 					basicSetup,
 					markdown(),
+					// Register the @handle typeahead as markdown language data so
+					// basicSetup's autocompletion picks it up as a completion source.
+					markdownLanguage.data.of({ autocomplete: mentionCompletions }),
 					EditorView.lineWrapping,
 					// CodeMirror disables these on its contenteditable by default,
 					// which suppresses iOS spellcheck/autocorrect/autocapitalize.

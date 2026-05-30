@@ -195,7 +195,15 @@
 		const did = auth.did;
 		if (!did) return;
 		dismissComment(commentUri, did);
-		const next = updateCachedInbox(did, (r) => removeCommentFromInbox(r, commentUri, docUri));
+		const next = updateCachedInbox(did, (r) => removeItemFromInbox(r, docUri, commentUri));
+		if (next) inbox = next;
+	}
+
+	function onDismissMention(mentionUri: string, docUri: string) {
+		const did = auth.did;
+		if (!did) return;
+		dismissComment(mentionUri, did);
+		const next = updateCachedInbox(did, (r) => removeItemFromInbox(r, docUri, mentionUri));
 		if (next) inbox = next;
 	}
 
@@ -205,7 +213,7 @@
 		const group = inbox?.groups.find((g) => g.docUri === docUri);
 		if (!group) return;
 		dismissComments(
-			group.comments.map((c) => c.uri),
+			[...group.comments.map((c) => c.uri), ...group.mentions.map((m) => m.uri)],
 			did
 		);
 		const next = updateCachedInbox(did, (r) => removeGroupFromInbox(r, docUri));
@@ -213,23 +221,41 @@
 		expanded.delete(docUri);
 	}
 
-	function removeCommentFromInbox(r: InboxResult, commentUri: string, docUri: string): InboxResult {
+	function groupUnread(g: InboxResult['groups'][number]): number {
+		return g.comments.length + g.mentions.length;
+	}
+
+	function inboxTotal(groups: InboxResult['groups']): number {
+		return groups.reduce((sum, g) => sum + groupUnread(g), 0);
+	}
+
+	// Drop a single comment or mention (keyed by at-uri) from its group, removing
+	// the group entirely once it has neither comments nor mentions left.
+	function removeItemFromInbox(r: InboxResult, docUri: string, itemUri: string): InboxResult {
 		const groups = r.groups
 			.map((g) => {
 				if (g.docUri !== docUri) return g;
-				const comments = g.comments.filter((c) => c.uri !== commentUri);
-				if (comments.length === 0) return null;
-				return { ...g, comments, mostRecentAt: comments[0].createdAt };
+				const comments = g.comments.filter((c) => c.uri !== itemUri);
+				const mentions = g.mentions.filter((m) => m.uri !== itemUri);
+				if (comments.length === 0 && mentions.length === 0) return null;
+				const mostRecentAt = [
+					...comments.map((c) => c.createdAt),
+					...mentions.map((m) => m.createdAt)
+				].sort((a, b) => b.localeCompare(a))[0];
+				return { ...g, comments, mentions, mostRecentAt };
 			})
 			.filter((g): g is NonNullable<typeof g> => g !== null);
-		const totalUnread = groups.reduce((sum, g) => sum + g.comments.length, 0);
-		return { ...r, groups, totalUnread };
+		return { ...r, groups, totalUnread: inboxTotal(groups) };
 	}
 
 	function removeGroupFromInbox(r: InboxResult, docUri: string): InboxResult {
 		const groups = r.groups.filter((g) => g.docUri !== docUri);
-		const totalUnread = groups.reduce((sum, g) => sum + g.comments.length, 0);
-		return { ...r, groups, totalUnread };
+		return { ...r, groups, totalUnread: inboxTotal(groups) };
+	}
+
+	function shortVersion(versionUri: string): string {
+		const rkey = versionUri.split('/').pop() ?? '';
+		return rkey.length > 8 ? rkey.slice(-6) : rkey;
 	}
 
 	// Bump the age stamp once a minute so "just now" → "1 min ago" → "2 min ago"
@@ -463,9 +489,13 @@
 				<ol class="ledger ledger-inbox" aria-label="Unread comments by document">
 					{#each inbox.groups as group (group.docUri)}
 						{@const isOpen = expanded.has(group.docUri)}
-						{@const uniqueCommenters = new Set(group.comments.map((c) => c.commenterHandle))}
-						{@const recentCommenter = group.comments[0].commenterHandle}
-						{@const moreCount = uniqueCommenters.size - 1}
+						{@const unreadCount = group.comments.length + group.mentions.length}
+						{@const actors = [
+							...group.comments.map((c) => ({ handle: c.commenterHandle, at: c.createdAt })),
+							...group.mentions.map((m) => ({ handle: m.authorHandle, at: m.createdAt }))
+						].sort((a, b) => b.at.localeCompare(a.at))}
+						{@const recentActor = actors[0].handle}
+						{@const moreCount = new Set(actors.map((a) => a.handle)).size - 1}
 						{@const visible = group.comments.slice(0, GROUP_VISIBLE_CAP)}
 						{@const hidden = group.comments.length - visible.length}
 						<li class="ledger-row ledger-row-inbox" class:open={isOpen}>
@@ -477,12 +507,12 @@
 								aria-controls="inbox-group-{group.docUri}"
 							>
 								<span class="ledger-tag ledger-tag-new" aria-hidden="true">
-									<span class="dot" aria-hidden="true"></span>{unreadLabel(group.comments.length)}
+									<span class="dot" aria-hidden="true"></span>{unreadLabel(unreadCount)}
 								</span>
-								<span class="sr-only">{group.comments.length} unread comments</span>
+								<span class="sr-only">{unreadCount} unread items</span>
 								<span class="ledger-title">{group.docTitle}</span>
 								<span class="ledger-byline">
-									from @{recentCommenter}{#if moreCount > 0}
+									from @{recentActor}{#if moreCount > 0}
 										<span class="ledger-more"> + {moreCount} more</span>
 									{/if}
 								</span>
@@ -494,6 +524,42 @@
 							</button>
 							{#if isOpen}
 								<div id="inbox-group-{group.docUri}" class="inbox-panel">
+									{#if group.mentions.length > 0}
+										<ol class="inbox-comments inbox-mentions">
+											{#each group.mentions as m (m.uri)}
+												<li
+													class="inbox-comment"
+													transition:fade={{ duration: reducedMotion ? 0 : 160 }}
+												>
+													<a
+														class="inbox-comment-link"
+														href={resolve('/d/[did]/[rkey]', {
+															did: group.docDid,
+															rkey: group.docRkey
+														})}
+													>
+														<span class="inbox-commenter">@{m.authorHandle}</span>
+														<span class="inbox-line inbox-line-mention">MENTION</span>
+														<span class="inbox-snippet"
+															>mentioned you in version {shortVersion(m.versionUri)}</span
+														>
+														<span class="ledger-dots inbox-dots" aria-hidden="true"></span>
+														<time class="inbox-time" datetime={m.createdAt}>
+															{formatCommentTime(m.createdAt)}
+														</time>
+													</a>
+													<button
+														type="button"
+														class="action inbox-dismiss"
+														onclick={() => onDismissMention(m.uri, group.docUri)}
+														aria-label="Dismiss mention from @{m.authorHandle}"
+													>
+														[ dismiss ]
+													</button>
+												</li>
+											{/each}
+										</ol>
+									{/if}
 									<ol class="inbox-comments">
 										{#each visible as c (c.uri)}
 											<li
@@ -1013,6 +1079,10 @@
 		padding: 0.1em 0.5ch;
 		border: var(--border-thin) solid var(--rule);
 		font-variant-numeric: tabular-nums;
+	}
+	.inbox-line-mention {
+		color: var(--accent);
+		border-color: var(--accent);
 	}
 	.inbox-snippet {
 		font-size: var(--text-sm);

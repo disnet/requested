@@ -1,0 +1,37 @@
+{
+	"lexicon": 1,
+	"id": "fyi.requested.mention",
+	"defs": {
+		"main": {
+			"type": "record",
+			"description": "A notification that the document author @mentioned an account in a fyi.requested.documentVersion. Lives on the document author's PDS. Discovered by the mentioned account via a Constellation backlink query keyed on `subject`. Idempotent per (document, subject): the author lists their own mentions before each write and skips duplicates.",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["subject", "document", "version", "createdAt"],
+				"properties": {
+					"subject": {
+						"type": "string",
+						"format": "did",
+						"description": "DID of the mentioned account. Indexed by Constellation so the subject can discover mentions of themselves across all authors."
+					},
+					"document": {
+						"type": "string",
+						"format": "at-uri",
+						"description": "AT-URI of the fyi.requested.document the mention appears in. Mutable target (the doc's currentVersion changes over time), so this is a plain at-uri rather than a strongRef."
+					},
+					"version": {
+						"type": "ref",
+						"ref": "com.atproto.repo.strongRef",
+						"description": "Strong ref to the specific fyi.requested.documentVersion that introduced this mention. Immutable, so the CID is stable."
+					},
+					"createdAt": {
+						"type": "string",
+						"format": "datetime",
+						"description": "When the mention record was written."
+					}
+				}
+			}
+		}
+	}
+}
