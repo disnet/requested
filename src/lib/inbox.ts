@@ -17,6 +17,7 @@ import {
 	type DocumentSummary
 } from './atproto/documents';
 import { listMyCommentedDocs } from './atproto/comments';
+import { listMentionsForSubject, type LoadedMention } from './atproto/mentions';
 import { fetchProfile, type Profile } from './atproto/profile';
 import { listViewed } from './viewed-docs';
 import { listDismissedSet } from './dismissed-comments';
@@ -32,6 +33,15 @@ export type InboxComment = {
 	createdAt: string;
 };
 
+export type InboxMention = {
+	uri: string;
+	cid: string;
+	authorDid: string;
+	authorHandle: string;
+	versionUri: string;
+	createdAt: string;
+};
+
 export type InboxGroup = {
 	docUri: string;
 	docDid: string;
@@ -39,6 +49,7 @@ export type InboxGroup = {
 	docTitle: string;
 	authorHandle: string;
 	comments: InboxComment[];
+	mentions: InboxMention[];
 	mostRecentAt: string;
 };
 
@@ -95,8 +106,27 @@ async function buildTrackedDocSet(agent: Agent, myDid: string): Promise<string[]
 }
 
 export async function loadInbox(agent: Agent, myDid: string): Promise<InboxResult> {
-	const docUris = await buildTrackedDocSet(agent, myDid);
 	const dismissed = listDismissedSet(myDid);
+
+	// Discover docs that mention the viewer (via Constellation, keyed on the
+	// viewer's DID) in parallel with the locally-derived tracked-doc set. A
+	// mention surfaces a doc the viewer may never have visited, so its doc uri
+	// has to be unioned into the set the comment fan-out walks.
+	const [tracked, allMentions] = await Promise.all([
+		buildTrackedDocSet(agent, myDid),
+		listMentionsForSubject(myDid).catch(() => [] as LoadedMention[])
+	]);
+
+	// Fold mentions by document, dropping dismissed ones. Newest first.
+	const mentionsByDoc = new Map<string, LoadedMention[]>();
+	for (const m of allMentions) {
+		if (dismissed.has(m.uri)) continue;
+		const list = mentionsByDoc.get(m.value.document);
+		if (list) list.push(m);
+		else mentionsByDoc.set(m.value.document, [m]);
+	}
+
+	const docUris = [...new Set([...tracked, ...mentionsByDoc.keys()])];
 
 	// Fan out per doc. Per-doc failures (PDS down, doc deleted, Constellation
 	// hiccup) are isolated so one broken record can't blank the whole inbox.
@@ -104,7 +134,8 @@ export async function loadInbox(agent: Agent, myDid: string): Promise<InboxResul
 		docUris.map(async (docUri): Promise<InboxGroup | null> => {
 			const comments = await listAllCommentsOn(docUri, { agent, myDid });
 			const unread = comments.filter((c) => c.did !== myDid && !dismissed.has(c.uri));
-			if (unread.length === 0) return null;
+			const docMentions = mentionsByDoc.get(docUri) ?? [];
+			if (unread.length === 0 && docMentions.length === 0) return null;
 
 			const { repo: docDid, rkey: docRkey } = parseAtUri(docUri);
 			const [doc, authorProfile] = await Promise.all([
@@ -112,18 +143,20 @@ export async function loadInbox(agent: Agent, myDid: string): Promise<InboxResul
 				fetchProfile(docDid).catch(() => null as Profile | null)
 			]);
 
-			// Hydrate commenter handles once per unique commenter, not per comment.
-			const uniqueCommenters = [...new Set(unread.map((c) => c.did))];
-			const commenterProfiles = await Promise.all(
-				uniqueCommenters.map((did) => fetchProfile(did).catch(() => null as Profile | null))
+			// Hydrate commenter + mention-author handles once per unique DID.
+			const uniqueDids = [
+				...new Set([...unread.map((c) => c.did), ...docMentions.map((m) => m.did)])
+			];
+			const profiles = await Promise.all(
+				uniqueDids.map((did) => fetchProfile(did).catch(() => null as Profile | null))
 			);
 			const handleByDid = new Map<string, string>();
-			for (let i = 0; i < uniqueCommenters.length; i++) {
-				const did = uniqueCommenters[i];
-				handleByDid.set(did, commenterProfiles[i]?.handle ?? did);
+			for (let i = 0; i < uniqueDids.length; i++) {
+				handleByDid.set(uniqueDids[i], profiles[i]?.handle ?? uniqueDids[i]);
 			}
 
 			unread.sort((a, b) => b.value.createdAt.localeCompare(a.value.createdAt));
+			docMentions.sort((a, b) => b.value.createdAt.localeCompare(a.value.createdAt));
 
 			const inboxComments: InboxComment[] = unread.map((c: LoadedComment) => ({
 				uri: c.uri,
@@ -136,6 +169,20 @@ export async function loadInbox(agent: Agent, myDid: string): Promise<InboxResul
 				createdAt: c.value.createdAt
 			}));
 
+			const inboxMentions: InboxMention[] = docMentions.map((m) => ({
+				uri: m.uri,
+				cid: m.cid,
+				authorDid: m.did,
+				authorHandle: handleByDid.get(m.did) ?? m.did,
+				versionUri: m.value.version.uri,
+				createdAt: m.value.createdAt
+			}));
+
+			const mostRecentAt = [
+				...inboxComments.map((c) => c.createdAt),
+				...inboxMentions.map((m) => m.createdAt)
+			].sort((a, b) => b.localeCompare(a))[0];
+
 			return {
 				docUri,
 				docDid,
@@ -143,7 +190,8 @@ export async function loadInbox(agent: Agent, myDid: string): Promise<InboxResul
 				docTitle: doc.value.title,
 				authorHandle: authorProfile?.handle ?? docDid,
 				comments: inboxComments,
-				mostRecentAt: inboxComments[0].createdAt
+				mentions: inboxMentions,
+				mostRecentAt
 			};
 		})
 	);
@@ -152,7 +200,7 @@ export async function loadInbox(agent: Agent, myDid: string): Promise<InboxResul
 		.flatMap((r) => (r.status === 'fulfilled' && r.value ? [r.value] : []))
 		.sort((a, b) => b.mostRecentAt.localeCompare(a.mostRecentAt));
 
-	const totalUnread = groups.reduce((sum, g) => sum + g.comments.length, 0);
+	const totalUnread = groups.reduce((sum, g) => sum + g.comments.length + g.mentions.length, 0);
 
 	return {
 		groups,

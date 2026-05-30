@@ -1,6 +1,46 @@
-import { marked, type Token, type Tokens } from 'marked';
+import { marked, type Token, type Tokens, type TokenizerAndRendererExtension } from 'marked';
 import DOMPurify from 'dompurify';
 import { browser } from '$app/environment';
+
+// `@handle.tld` mentions render as a link to the account's Bluesky profile.
+// Registered as an inline extension so it only fires inside prose text —
+// marked never runs inline tokenizers inside code spans, fenced code, link
+// labels, or raw HTML, so those constructs are skipped without extra guards.
+// The handle pattern: one-or-more dot-separated labels ending in an alphabetic
+// (≥2) TLD, guaranteeing at least one dot. Kept in sync with the matcher in
+// atproto/mentions.ts so the rendered set matches the notified set.
+const MENTION_RULE =
+	/^@([a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,})/;
+// Leading-boundary probe used by `start`: an `@` at the run start or preceded
+// by a non-word/`@`/`.`/`/`/`-` char (so `name@host.com` emails, `@@`, and
+// path-embedded handles don't begin a mention).
+const MENTION_START = /(^|[^\w@./-])@[a-zA-Z0-9]/;
+
+type MentionToken = {
+	type: 'mention';
+	raw: string;
+	handle: string;
+};
+
+const mentionExtension: TokenizerAndRendererExtension = {
+	name: 'mention',
+	level: 'inline',
+	start(src: string) {
+		const m = MENTION_START.exec(src);
+		return m ? m.index + m[1].length : undefined;
+	},
+	tokenizer(src: string) {
+		const m = MENTION_RULE.exec(src);
+		if (!m) return undefined;
+		return { type: 'mention', raw: m[0], handle: m[1] } satisfies MentionToken;
+	},
+	renderer(token) {
+		const handle = (token as MentionToken).handle;
+		return `<a href="https://bsky.app/profile/${handle}" class="mention">@${handle}</a>`;
+	}
+};
+
+marked.use({ extensions: [mentionExtension] });
 
 // Sanitize marked output. DOMPurify is the canonical implementation but
 // requires a DOM, so on the Cloudflare Worker we route through sanitize-html
@@ -117,7 +157,14 @@ function createRenderer(topDepth: number | null, seenSlugs: Set<string>) {
 export function renderMarkdown(src: string): string {
 	const tokens = marked.lexer(src);
 	const topDepth = findTopHeadingDepth(tokens);
-	const rawHtml = marked.parser(tokens, { renderer: createRenderer(topDepth, new Set()) });
+	// Spread marked.defaults so the registered `mention` inline extension
+	// (marked.use above) stays wired into the parser — passing a bare
+	// `{ renderer }` replaces defaults wholesale, dropping options.extensions and
+	// making the parser throw on the custom `mention` token the lexer produced.
+	const rawHtml = marked.parser(tokens, {
+		...marked.defaults,
+		renderer: createRenderer(topDepth, new Set())
+	});
 	return sanitize(rawHtml);
 }
 
@@ -167,7 +214,7 @@ export function renderMarkdownBlocks(src: string): RenderedBlock[] {
 		// single token still resolve.
 		const sub: Token[] = [token];
 		(sub as unknown as { links: typeof links }).links = links;
-		const rawHtml = marked.parser(sub, { renderer });
+		const rawHtml = marked.parser(sub, { ...marked.defaults, renderer });
 
 		let html = rawHtml;
 		let subLines: number[] = [];

@@ -1,6 +1,8 @@
-// Per-device tracker for comment URIs the signed-in user has dismissed from
-// their inbox. Mirrors viewed-docs.ts: per-viewer scoping (so a shared browser
-// doesn't bleed dismissals across identities), silent on quota failures.
+// Per-device tracker for inbox item URIs the signed-in user has dismissed.
+// Items are at-uris — comments and @mention records alike (at-uris are unique
+// across collections, so one Set covers both). Mirrors viewed-docs.ts:
+// per-viewer scoping (so a shared browser doesn't bleed dismissals across
+// identities), silent on quota failures.
 //
 // "Dismissed" is local-only by design — no PDS surface, no cross-device sync.
 // Re-signing in on a fresh device starts the inbox at "everything's new again,"

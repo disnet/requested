@@ -4,6 +4,7 @@ import {
 	COMMENT_NSID,
 	DOCUMENT_NSID,
 	DOCUMENT_VERSION_NSID,
+	MENTION_NSID,
 	THREAD_RESOLUTION_NSID
 } from './lexicons';
 
@@ -21,7 +22,8 @@ const SCOPES = [
 	`repo:${DOCUMENT_NSID}`,
 	`repo:${DOCUMENT_VERSION_NSID}`,
 	`repo:${COMMENT_NSID}`,
-	`repo:${THREAD_RESOLUTION_NSID}`
+	`repo:${THREAD_RESOLUTION_NSID}`,
+	`repo:${MENTION_NSID}`
 ].join(' ');
 
 const PROD_ORIGIN = 'https://requested.fyi';

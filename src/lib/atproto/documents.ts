@@ -79,7 +79,8 @@ export async function createDocument(
 	agent: Agent,
 	did: string,
 	title: string,
-	body: string
+	body: string,
+	options: { notifyMentions?: boolean } = {}
 ): Promise<{ docUri: string; docRkey: string }> {
 	const createdAt = new Date().toISOString();
 
@@ -113,7 +114,46 @@ export async function createDocument(
 		record: docFinal
 	});
 
+	if (options.notifyMentions !== false) {
+		await notifyMentions(
+			agent,
+			did,
+			docRes.data.uri,
+			{ uri: versionRes.data.uri, cid: versionRes.data.cid },
+			body
+		);
+	}
+
 	return { docUri: docRes.data.uri, docRkey: parseAtUri(docRes.data.uri).rkey };
+}
+
+// Fire-and-forget mention notifications for a freshly-written version. Best
+// effort: a failure here (bad handle, mention scope not granted, Constellation
+// down) must never surface as a failed save, so we swallow and log. Imported
+// lazily to keep the documents↔mentions module cycle from mattering at eval
+// time and to avoid pulling `marked` into bundles that only read documents.
+async function notifyMentions(
+	agent: Agent,
+	authorDid: string,
+	documentUri: string,
+	versionRef: StrongRef,
+	body: string
+): Promise<void> {
+	try {
+		const { syncMentionsForVersion } = await import('./mentions');
+		const { failed } = await syncMentionsForVersion(
+			agent,
+			authorDid,
+			documentUri,
+			versionRef,
+			body
+		);
+		if (failed.length > 0) {
+			console.warn('mention notify: unresolved handles', failed);
+		}
+	} catch (err) {
+		console.warn('mention notify failed', err);
+	}
 }
 
 // Saves an edit: writes a new version chained off the prior one and updates the
@@ -122,7 +162,8 @@ export async function saveNewVersion(
 	agent: Agent,
 	did: string,
 	doc: LoadedDocument,
-	body: string
+	body: string,
+	options: { notifyMentions?: boolean } = {}
 ): Promise<{ versionUri: string; versionCid: string }> {
 	if (!doc.version) throw new Error('Document has no current version to chain from');
 	const createdAt = new Date().toISOString();
@@ -151,6 +192,16 @@ export async function saveNewVersion(
 		record: docFinal,
 		swapRecord: doc.cid
 	});
+
+	if (options.notifyMentions !== false) {
+		await notifyMentions(
+			agent,
+			did,
+			doc.uri,
+			{ uri: versionRes.data.uri, cid: versionRes.data.cid },
+			body
+		);
+	}
 
 	return { versionUri: versionRes.data.uri, versionCid: versionRes.data.cid };
 }

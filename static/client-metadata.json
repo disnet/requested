@@ -3,7 +3,7 @@
 	"client_name": "Requested",
 	"client_uri": "https://requested.fyi",
 	"redirect_uris": ["https://requested.fyi/"],
-	"scope": "atproto repo:fyi.requested.document repo:fyi.requested.documentVersion repo:fyi.requested.comment repo:fyi.requested.threadResolution",
+	"scope": "atproto repo:fyi.requested.document repo:fyi.requested.documentVersion repo:fyi.requested.comment repo:fyi.requested.threadResolution repo:fyi.requested.mention",
 	"grant_types": ["authorization_code", "refresh_token"],
 	"response_types": ["code"],
 	"application_type": "web",

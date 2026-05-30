@@ -119,6 +119,16 @@ samp {
 	font-size: 0.95em;
 }
 
+/* @mention links rendered inside markdown bodies (see markdown.ts). Styled to
+   read as a distinct, non-wrapping handle. `color`/`font-weight`/`white-space`
+   land even inside the more-specific scoped `.prose a` rules because those
+   don't set these properties. */
+.mention {
+	color: var(--accent);
+	font-weight: 500;
+	white-space: nowrap;
+}
+
 /* Utility: the 72ch document column. Use on any block that should obey the
    project's spine width. */
 .column {
