@@ -75,6 +75,13 @@
 					basicSetup,
 					markdown(),
 					EditorView.lineWrapping,
+					// CodeMirror disables these on its contenteditable by default,
+					// which suppresses iOS spellcheck/autocorrect/autocapitalize.
+					EditorView.contentAttributes.of({
+						spellcheck: 'true',
+						autocorrect: 'on',
+						autocapitalize: 'sentences'
+					}),
 					themeCompartment.of(cmTheme(isDark())),
 					EditorView.updateListener.of((update) => {
 						if (update.docChanged && !suppressOutput) {

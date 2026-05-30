@@ -72,6 +72,13 @@
 					markdown(),
 					EditorView.lineWrapping,
 					placeholderExt(placeholder),
+					// CodeMirror disables these on its contenteditable by default,
+					// which suppresses iOS spellcheck/autocorrect/autocapitalize.
+					EditorView.contentAttributes.of({
+						spellcheck: 'true',
+						autocorrect: 'on',
+						autocapitalize: 'sentences'
+					}),
 					// High precedence so these bindings win against minimalSetup's
 					// defaults — Escape would otherwise just clear selection.
 					Prec.high(

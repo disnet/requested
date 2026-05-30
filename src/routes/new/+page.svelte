@@ -74,6 +74,8 @@
 						bind:value={title}
 						required
 						maxlength="300"
+						spellcheck="true"
+						autocapitalize="sentences"
 						autofocus
 					/>
 				</label>
